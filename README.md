@@ -13,219 +13,163 @@ It extracts narration text, generates paragraph-level voice audio, aligns audio 
 | CUDA | Recommended | Speeds up local TTS inference |
 | Local TTS backend | Qwen-TTS | Used in `voice_process` |
 | VL backend | Qwen2.5-VL-72B via MAAS API | Used in `timeline_align` |
-| API key | `MAAS_API_KEY` | Required for Stage 4 VL calls |
+| API key | `MAAS_API_KEY` | Required for timeline alignment |
 
-## Project Structure
+## Recommended Usage
 
-```text
-text_process/
-  run_text_process.py      # build page text artifacts
-  config/
-    pronunciation_rules.json
+The recommended way to run NarrateFlow is through the interactive pipeline entrypoint:
 
-voice_process/
-  run_voice_profile.py     # build voice profile
-  run_voice_generate.py    # build paragraph audio
-  common.py                # shared voice utilities
-
-timeline_align/
-  run_timeline_align.py    # build timeline
-  keyframe_filter.py       # extract keyframes
-  vl_client.py             # call VL backend
-
-video_compose/
-  run_video_compose.py     # render final video
+```bash
+python run_pipeline.py
 ```
 
-## Workflow
+The pipeline will:
+
+1. ask for missing inputs interactively
+2. run the stages in order
+3. pause after reviewable stages
+4. allow paragraph-level regeneration during voice review
+
+## Example Interactive Flow
+
+Below is a simplified example of what an interactive run looks like.
+
+### Input Collection
+
+```text
+PPT path: D:\work\example.pptx
+Page number: 5
+Target video path: D:\work\example.mp4
+
+Title mode
+- first: treat the first paragraph as title
+- none: treat all paragraphs as narration
+- manual: choose title paragraph indices manually
+Choice (first/none/manual) [first]: first
+
+Do you already have a voice profile file (y/n) [y]: y
+Voice profile path (.pt file or profile directory): D:\qwen3-tts\outputs\voice_profiles\reference_voice
+
+Initial probe times (comma separated, keyframe times) [0,10,20,30]: 0,10,20,30
+```
 
 ### Stage 1. Text Processing
 
-**What it does**
+**Output and Review**
 
-Extracts text from a PPT page, applies terminology rules, and prepares narration-ready spoken text.
+Check:
+- paragraph extraction
+- title handling
+- spoken narration wording
 
-**Arguments**
+Edit if needed:
+- `page_XX.spoken.json -> paragraphs[].spoken_text`
 
-- `--ppt`: `.pptx` file
-- `--page`: page number
-- `--title-mode`: `first`, `none`, or `manual`
-- `--title-indices`: title paragraph indices when `--title-mode manual`
-- `--output-dir`: optional custom output directory
+```text
+[1/5] Text Processing
+Stage 1 completed.
+extracted_json: D:\...\page_05.extracted.json
+spoken_json:    D:\...\page_05.spoken.json
 
-**Output path**
-
-- `outputs/scripts/<page_title>/page_XX.extracted.json`
-  Raw extracted paragraphs from the source page
-- `outputs/scripts/<page_title>/page_XX.spoken.json`
-  Normalized narration text used by later stages
-
-**Command**
-
-```bash
-python text_process/run_text_process.py --ppt "inputs/example.pptx" --page 1
-```
-
-No-title page example:
-
-```bash
-python text_process/run_text_process.py \
-  --ppt "inputs/example.pptx" \
-  --page 1 \
-  --title-mode none
+Stage 1 review action
+- c: continue to the next stage
+- s: stop here
+Choice (c/s) [c]: c
 ```
 
 ### Stage 2. Voice Profile Generation
 
-**What it does**
+**Output**
 
-Builds a reusable voice profile from reference audio.
-
-**Arguments**
-
-- `--voice-name`: output profile name
-- `--ref-audio`: reference audio file
-- `--ref-text`: reference text for the audio
-- `--output-dir`: optional custom output directory
-
-**Output path**
-
-- `outputs/voice_profiles/<voice_name>/<voice_name>.pt`
-  Saved voice profile file
-
-If `--output-dir` is provided, the profile is written to that directory instead.
-
-**Command**
-
-```bash
-python voice_process/run_voice_profile.py \
-  --voice-name reference_voice \
-  --ref-audio "path/to/ref.wav" \
-  --ref-text "reference text"
+```text
+[2/5] Voice Profile Generation (skipped, using existing profile)
+profile_path: D:\...\reference_voice.pt
 ```
 
 ### Stage 3. Voice Generation
 
-**What it does**
+**Output and Review**
 
-Generates paragraph-level audio from `page_XX.spoken.json` using a saved voice profile.
+Check:
+- paragraph-level audio quality
+- omitted or weakly spoken words
+- sentence endings
 
-**Arguments**
+Edit or regenerate if needed:
+- edit `page_XX.spoken.json -> paragraphs[].spoken_text` if wording is wrong
+- regenerate by paragraph index if wording is correct but audio sounds bad
 
-- `--spoken-json`: Stage 1 spoken file
-- `--profile`: voice profile file
-- `--voice-name`: output voice folder name
-- `--paragraph-index`: optional, regenerate one paragraph only
-- `--output-dir`: optional custom output directory
+```text
+[3/5] Voice Generation
+Stage 3 completed.
+manifest: D:\...\segments_manifest.json
+segments_dir: D:\...\segments
+Available paragraphs:
+2, 3, 4, 5, 6, 7
 
-**Output path**
-
-- `outputs/<voice_name>/<page_title>/segments_manifest.json`
-  Main audio index file for the page
-- `outputs/<voice_name>/<page_title>/segments/*.wav`
-  Paragraph-level audio files
-
-If `--output-dir` is provided, all generated audio artifacts are written to that directory instead.
-
-**Command**
-
-```bash
-python voice_process/run_voice_generate.py \
-  --spoken-json "outputs/scripts/<page_title>/page_01.spoken.json" \
-  --profile "outputs/voice_profiles/<voice_name>/<voice_name>.pt" \
-  --voice-name <voice_name>
-```
-
-Single-paragraph regeneration:
-
-```bash
-python voice_process/run_voice_generate.py \
-  --spoken-json "outputs/scripts/<page_title>/page_01.spoken.json" \
-  --profile "outputs/voice_profiles/<voice_name>/<voice_name>.pt" \
-  --voice-name <voice_name> \
-  --paragraph-index 4
+Stage 3 review action
+- c: continue to the next stage
+- r: regenerate one or more paragraphs
+- s: stop here
+Choice (c/r/s) [c]: r
+Enter paragraph indices to regenerate (comma separated or 'all'): 4,7
 ```
 
 ### Stage 4. Timeline Alignment
 
-**What it does**
+**Output and Review**
 
-Matches narration paragraphs to video moments using keyframes and a vision-language model, then builds a reviewable timeline.
+Check:
+- paragraph starts
+- missing paragraphs
+- ordering issues
 
-**Arguments**
+Edit if needed:
+- `page_XX.timeline.final.json -> segments[].start`
+- for missing paragraphs, set `matched=true` and provide `start`
 
-- `--video`: target video file
-- `--spoken-json`: Stage 1 spoken file
-- `--output`: final timeline file path
-- `--probe-mode`: usually `keyframes`
-- `--probe-times`: initial keyframe times for probing
+```text
+[4/5] Timeline Alignment
+Stage 4 completed.
+timeline: D:\...\page_05.timeline.final.json
+status: complete
+missing: []
 
-**Output path**
-
-- `outputs/scripts/<page_title>/page_XX.timeline.final.json`
-  Main reviewable timeline file
-- `outputs/scripts/<page_title>/page_XX.timeline.final.json.debug.json`
-  Full debug timeline with internal matching details
-
-**Command**
-
-```bash
-python timeline_align/run_timeline_align.py \
-  --video "path/to/video.mp4" \
-  --spoken-json "outputs/scripts/<page_title>/page_01.spoken.json" \
-  --output "outputs/scripts/<page_title>/page_01.timeline.final.json" \
-  --probe-mode keyframes \
-  --probe-times "0,10,20,30"
+Stage 4 review action
+- c: continue to the next stage
+- s: stop here
+Choice (c/s) [c]: c
 ```
 
 ### Stage 5. Video Composition
 
-**What it does**
+**Output and Review**
 
-Composes the final dubbed video. If a video segment is shorter than the audio duration, the local video segment is retimed instead of truncating audio.
+Check:
+- final pacing
+- retiming quality
+- audio-video alignment
 
-**Arguments**
+If something is wrong:
+- go back to Stage 3 for audio issues
+- go back to Stage 4 for timing issues
 
-- `--video`: target video file
-- `--timeline`: Stage 4 final timeline file
-- `--segments-manifest`: Stage 3 audio manifest file
-- `--output-dir`: output folder for composed results
-
-**Output path**
-
-- `outputs/composed/<page_name>/page_audio.wav`
-  Final composed audio track
-- `outputs/composed/<page_name>/page_retimed_video.mp4`
-  Video after local retiming
-- `outputs/composed/<page_name>/page_composed.mp4`
-  Final dubbed video
-- `outputs/composed/<page_name>/page_plan.json`
-  Composition and retiming plan
-
-**Command**
-
-```bash
-python video_compose/run_video_compose.py \
-  --video "path/to/video.mp4" \
-  --timeline "outputs/scripts/<page_title>/page_01.timeline.final.json" \
-  --segments-manifest "outputs/<voice_name>/<page_title>/segments_manifest.json" \
-  --output-dir "outputs/composed/page_01"
+```text
+[5/5] Video Composition
+Stage 5 completed.
+final_video: D:\...\page_composed.mp4
+output_dir:   D:\...\outputs\composed\page_xx
 ```
 
-## Human Review
+## Current Behavior
 
-NarrateFlow assumes human review between stages.
-
-- After Stage 1: check extracted and spoken text
-- After Stage 2: check paragraph-level audio quality
-- After Stage 4: check starts, missing paragraphs, and ordering
-- After Stage 5: check pacing, retiming quality, and final alignment
-
-## Timeline Semantics
-
-- `start` is the primary insertion point
-- `end_hint` is a reference window only
-- actual playback duration is decided in Stage 5 using audio duration, buffer, and the next segment start
+- paragraph-level audio generation
+- start-driven timeline semantics
+- local video retiming instead of truncating audio
+- current composition defaults:
+  - `buffer_sec = 1.2`
+  - `tail_buffer_sec = 1.5`
+  - `audio_tail_pad_sec = 0.5`
 
 ## Limitations
 
@@ -237,10 +181,7 @@ NarrateFlow assumes human review between stages.
 ## Roadmap
 
 - support more document input formats
-- improve keyframe selection with stable-frame sampling between change points
-- add richer keyframe typing such as subtitle-change, scene-change, and stable-fill
-- prioritize gap reprobe frames from keyframe candidates instead of uniform time sampling
-- explore OCR-assisted timeline alignment for subtitle-bearing frames
+- improve keyframe selection and OCR-assisted timeline alignment
 - improve adjacent-paragraph conflict resolution in timeline generation
 - add paragraph-level ASR review and regeneration workflow
-- provide a cleaner end-to-end CLI entrypoint
+- refine the interactive pipeline experience
