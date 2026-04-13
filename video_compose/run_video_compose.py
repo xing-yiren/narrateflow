@@ -263,7 +263,6 @@ def mux_video(video_path: Path, audio_path: Path, output_path: Path) -> None:
 
 
 def run_video_compose(
-    mode: str,
     video: Path,
     timeline: Path,
     segments_manifest: Path,
@@ -277,51 +276,34 @@ def run_video_compose(
     manifest = load_json(segments_manifest)
     sample_rate = int(manifest["sample_rate"])
 
-    if mode == "direct":
-        audio_track, sample_rate, placements = build_direct_track(
-            timeline, segments_manifest, video_duration, buffer_sec=buffer_sec
-        )
-        sf.write(output_dir / "page_audio.wav", audio_track, sample_rate)
-        mux_video(
-            video, output_dir / "page_audio.wav", output_dir / "page_composed.mp4"
-        )
-        plan = {
-            "mode": "direct",
-            "video_path": str(video),
-            "timeline": str(timeline),
-            "segments_manifest": str(segments_manifest),
-            "buffer_sec": buffer_sec,
-            "placements": placements,
-        }
-    else:
-        segments = build_retime_segments(
-            timeline,
-            segments_manifest,
-            video_duration,
-            buffer_sec=buffer_sec,
-            tail_buffer_sec=tail_buffer_sec,
-        )
-        audio_track, placements = build_retime_track(
-            segments, sample_rate, audio_tail_pad_sec=audio_tail_pad_sec
-        )
-        sf.write(output_dir / "page_audio.wav", audio_track, sample_rate)
-        render_retimed_video(video, segments, output_dir / "page_retimed_video.mp4")
-        mux_video(
-            output_dir / "page_retimed_video.mp4",
-            output_dir / "page_audio.wav",
-            output_dir / "page_composed.mp4",
-        )
-        plan = {
-            "mode": "retime",
-            "video_path": str(video),
-            "timeline": str(timeline),
-            "segments_manifest": str(segments_manifest),
-            "buffer_sec": buffer_sec,
-            "tail_buffer_sec": tail_buffer_sec,
-            "audio_tail_pad_sec": audio_tail_pad_sec,
-            "segments": segments,
-            "placements": placements,
-        }
+    segments = build_retime_segments(
+        timeline,
+        segments_manifest,
+        video_duration,
+        buffer_sec=buffer_sec,
+        tail_buffer_sec=tail_buffer_sec,
+    )
+    audio_track, placements = build_retime_track(
+        segments, sample_rate, audio_tail_pad_sec=audio_tail_pad_sec
+    )
+    sf.write(output_dir / "page_audio.wav", audio_track, sample_rate)
+    render_retimed_video(video, segments, output_dir / "page_retimed_video.mp4")
+    mux_video(
+        output_dir / "page_retimed_video.mp4",
+        output_dir / "page_audio.wav",
+        output_dir / "page_composed.mp4",
+    )
+    plan = {
+        "mode": "retime",
+        "video_path": str(video),
+        "timeline": str(timeline),
+        "segments_manifest": str(segments_manifest),
+        "buffer_sec": buffer_sec,
+        "tail_buffer_sec": tail_buffer_sec,
+        "audio_tail_pad_sec": audio_tail_pad_sec,
+        "segments": segments,
+        "placements": placements,
+    }
 
     (output_dir / "page_plan.json").write_text(
         json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -331,7 +313,6 @@ def run_video_compose(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Stage 4 video composition")
-    parser.add_argument("--mode", choices=["direct", "retime"], required=True)
     parser.add_argument("--video", required=True)
     parser.add_argument("--timeline", required=True)
     parser.add_argument("--segments-manifest", required=True)
@@ -342,7 +323,6 @@ def main() -> None:
     args = parser.parse_args()
 
     output = run_video_compose(
-        mode=args.mode,
         video=Path(args.video),
         timeline=Path(args.timeline),
         segments_manifest=Path(args.segments_manifest),

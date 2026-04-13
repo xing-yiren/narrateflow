@@ -22,6 +22,7 @@ def run_voice_profile(
     xvector_only: bool = False,
     device: str | None = None,
     dtype: str | None = None,
+    output_dir: Path | None = None,
 ) -> Path:
     tts = load_model(device=device, dtype=dtype)
     prompt_items = tts.create_voice_clone_prompt(
@@ -30,7 +31,8 @@ def run_voice_profile(
         x_vector_only_mode=xvector_only,
     )
     profile_name = slugify(voice_name)
-    profile_path = PROFILES_DIR / profile_name / f"{profile_name}.pt"
+    base_dir = output_dir if output_dir is not None else (PROFILES_DIR / profile_name)
+    profile_path = base_dir / f"{profile_name}.pt"
     save_prompt_file(prompt_items, profile_path)
     return profile_path
 
@@ -43,6 +45,7 @@ def main() -> None:
     parser.add_argument("--xvector-only", action="store_true")
     parser.add_argument("--device", default=None)
     parser.add_argument("--dtype", default=None)
+    parser.add_argument("--output-dir", default=None)
     args = parser.parse_args()
 
     profile_path = run_voice_profile(
@@ -52,6 +55,7 @@ def main() -> None:
         xvector_only=args.xvector_only,
         device=args.device,
         dtype=args.dtype,
+        output_dir=Path(args.output_dir) if args.output_dir else None,
     )
     print(profile_path)
 

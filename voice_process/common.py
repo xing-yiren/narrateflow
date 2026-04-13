@@ -28,8 +28,14 @@ from voice_clone_tool import (  # noqa: E402
 OUTPUTS_DIR = ROOT / "outputs"
 
 
-def build_voice_output_dir(profile_name: str, page_title: str) -> Path:
-    out_dir = OUTPUTS_DIR / slugify(profile_name) / slugify(page_title, max_len=60)
+def build_voice_output_dir(
+    profile_name: str, page_title: str, output_dir: Path | None = None
+) -> Path:
+    out_dir = (
+        output_dir
+        if output_dir is not None
+        else OUTPUTS_DIR / slugify(profile_name) / slugify(page_title, max_len=60)
+    )
     out_dir.mkdir(parents=True, exist_ok=True)
     return out_dir
 

@@ -31,9 +31,11 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def create_script_paths(ppt_path: Path, page: int) -> tuple[Path, Path]:
+def create_script_paths(
+    ppt_path: Path, page: int, output_dir: Path | None = None
+) -> tuple[Path, Path]:
     title_dir = get_ppt_output_dir_name(ppt_path, page)
-    out_dir = SCRIPTS_DIR / title_dir
+    out_dir = output_dir if output_dir is not None else (SCRIPTS_DIR / title_dir)
     return (
         out_dir / f"page_{page:02d}.extracted.json",
         out_dir / f"page_{page:02d}.spoken.json",
@@ -258,11 +260,21 @@ def prepare_ppt_page(
     page: int,
     rules_path: str | None = None,
     max_chars: int = 72,
+    title_indices: set[int] | None = None,
+    output_dir: Path | None = None,
 ) -> dict[str, Any]:
     paragraphs = extract_slide_paragraphs(ppt_path, page)
     rules = load_pronunciation_rules(rules_path)
-    extracted_path, spoken_path = create_script_paths(ppt_path, page)
-    title_text = paragraphs[0]["text"] if paragraphs else ""
+    extracted_path, spoken_path = create_script_paths(
+        ppt_path, page, output_dir=output_dir
+    )
+    title_indices = title_indices or {1}
+    title_paragraph = next((p for p in paragraphs if p["index"] in title_indices), None)
+    title_text = (
+        title_paragraph["text"]
+        if title_paragraph
+        else (paragraphs[0]["text"] if paragraphs else "")
+    )
 
     extracted_payload = {
         "ppt_path": str(ppt_path.resolve()),
@@ -282,7 +294,7 @@ def prepare_ppt_page(
             paragraph["text"], rules
         )
         spoken_text = normalize_spoken_text(spoken_text)
-        is_title = paragraph["index"] == 1
+        is_title = paragraph["index"] in title_indices
         segments = (
             [] if is_title else split_spoken_paragraph(spoken_text, max_chars=max_chars)
         )
@@ -349,13 +361,31 @@ def main() -> None:
     parser.add_argument("--page", type=int, required=True)
     parser.add_argument("--rules", default=None)
     parser.add_argument("--max-chars", type=int, default=72)
+    parser.add_argument(
+        "--title-mode", choices=["first", "none", "manual"], default="first"
+    )
+    parser.add_argument("--title-indices", default="1")
+    parser.add_argument("--output-dir", default=None)
     args = parser.parse_args()
+
+    if args.title_mode == "first":
+        title_indices = {1}
+    elif args.title_mode == "none":
+        title_indices = set()
+    else:
+        title_indices = {
+            int(item.strip())
+            for item in str(args.title_indices).split(",")
+            if item.strip()
+        }
 
     result = prepare_ppt_page(
         ppt_path=Path(args.ppt),
         page=args.page,
         rules_path=args.rules,
         max_chars=args.max_chars,
+        title_indices=title_indices,
+        output_dir=Path(args.output_dir) if args.output_dir else None,
     )
     print(
         json.dumps(

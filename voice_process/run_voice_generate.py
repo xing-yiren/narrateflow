@@ -75,6 +75,7 @@ def run_voice_generate(
     paragraph_index: int | None = None,
     segment_id: str | None = None,
     export_full_page: bool = False,
+    output_dir: Path | None = None,
 ) -> dict[str, Any]:
     payload = load_spoken_payload(spoken_json)
     validate_profile(profile_path)
@@ -109,6 +110,7 @@ def run_voice_generate(
     out_dir = build_voice_output_dir(
         profile_name=resolved_voice_name,
         page_title=title_text,
+        output_dir=output_dir,
     )
     manifest_path = out_dir / "segments_manifest.json"
 
@@ -216,6 +218,7 @@ def main() -> None:
     parser.add_argument("--paragraph-index", type=int, default=None)
     parser.add_argument("--segment-id", default=None)
     parser.add_argument("--export-full-page", action="store_true")
+    parser.add_argument("--output-dir", default=None)
     args = parser.parse_args()
 
     result = run_voice_generate(
@@ -231,6 +234,7 @@ def main() -> None:
         paragraph_index=args.paragraph_index,
         segment_id=args.segment_id,
         export_full_page=args.export_full_page,
+        output_dir=Path(args.output_dir) if args.output_dir else None,
     )
     print(
         json.dumps(
