@@ -8,8 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from voice_process.common import ROOT, load_model, save_prompt_file
-from voice_clone_tool import slugify
+from voice_process.common import ROOT, load_model, save_prompt_file, slugify
 
 
 PROFILES_DIR = ROOT / "outputs" / "voice_profiles"

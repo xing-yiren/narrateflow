@@ -212,12 +212,6 @@ python video_compose/run_video_compose.py \
   --output-dir "outputs/composed/page_01"
 ```
 
-Current default composition behavior:
-
-- `buffer_sec = 1.2`
-- `tail_buffer_sec = 1.5`
-- `audio_tail_pad_sec = 0.5`
-
 ## Human Review
 
 NarrateFlow assumes human review between stages.
@@ -247,7 +241,6 @@ NarrateFlow assumes human review between stages.
 - add richer keyframe typing such as subtitle-change, scene-change, and stable-fill
 - prioritize gap reprobe frames from keyframe candidates instead of uniform time sampling
 - explore OCR-assisted timeline alignment for subtitle-bearing frames
-- improve OCR + VL combined alignment
 - improve adjacent-paragraph conflict resolution in timeline generation
 - add paragraph-level ASR review and regeneration workflow
 - provide a cleaner end-to-end CLI entrypoint
