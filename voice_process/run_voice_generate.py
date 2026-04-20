@@ -11,6 +11,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from voice_process.common import (
+    apply_volume_gain,
     build_voice_file_stem,
     build_voice_output_dir,
     load_model,
@@ -74,6 +75,7 @@ def run_voice_generate(
     dtype: str | None = None,
     paragraph_index: int | None = None,
     segment_id: str | None = None,
+    volume_gain: float | None = None,
     export_full_page: bool = False,
     output_dir: Path | None = None,
 ) -> dict[str, Any]:
@@ -102,6 +104,8 @@ def run_voice_generate(
         speed=speed,
         max_new_tokens=max_new_tokens,
     )
+    if volume_gain is not None:
+        wavs = [apply_volume_gain(wav, volume_gain) for wav in wavs]
 
     resolved_voice_name = voice_name or profile_path.stem
     page = int(payload.get("page", 1))
@@ -217,6 +221,7 @@ def main() -> None:
     parser.add_argument("--dtype", default=None)
     parser.add_argument("--paragraph-index", type=int, default=None)
     parser.add_argument("--segment-id", default=None)
+    parser.add_argument("--volume-gain", type=float, default=None)
     parser.add_argument("--export-full-page", action="store_true")
     parser.add_argument("--output-dir", default=None)
     args = parser.parse_args()
@@ -233,6 +238,7 @@ def main() -> None:
         dtype=args.dtype,
         paragraph_index=args.paragraph_index,
         segment_id=args.segment_id,
+        volume_gain=args.volume_gain,
         export_full_page=args.export_full_page,
         output_dir=Path(args.output_dir) if args.output_dir else None,
     )

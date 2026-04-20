@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import time
 import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
@@ -16,6 +17,7 @@ DEFAULT_RULES_PATH = (
     Path(__file__).resolve().parent / "config" / "pronunciation_rules.json"
 )
 PPT_NS = {"a": "http://schemas.openxmlformats.org/drawingml/2006/main"}
+P_NS = "http://schemas.openxmlformats.org/presentationml/2006/main"
 
 
 def slugify(text: str, max_len: int = 60) -> str:
@@ -29,6 +31,24 @@ def slugify(text: str, max_len: int = 60) -> str:
 def write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def wait_for_file_stable(
+    path: Path, checks: int = 3, interval_sec: float = 0.4
+) -> None:
+    previous: tuple[int, int] | None = None
+    stable_count = 0
+    for _ in range(checks * 3):
+        stat = path.stat()
+        current = (int(stat.st_mtime_ns), int(stat.st_size))
+        if current == previous:
+            stable_count += 1
+            if stable_count >= checks:
+                return
+        else:
+            stable_count = 0
+        previous = current
+        time.sleep(interval_sec)
 
 
 def create_script_paths(
@@ -209,6 +229,7 @@ def split_spoken_paragraph(text: str, max_chars: int) -> list[str]:
 
 
 def extract_slide_paragraphs(ppt_path: Path, page: int) -> list[dict[str, Any]]:
+    wait_for_file_stable(ppt_path)
     slide_name = f"ppt/slides/slide{page}.xml"
     with zipfile.ZipFile(ppt_path) as archive:
         if slide_name not in archive.namelist():
@@ -234,25 +255,66 @@ def extract_slide_paragraphs(ppt_path: Path, page: int) -> list[dict[str, Any]]:
                 parts.append("\n")
         return "".join(parts).strip()
 
-    for shape in root.findall(
-        ".//p:sp",
-        {**PPT_NS, "p": "http://schemas.openxmlformats.org/presentationml/2006/main"},
-    ):
+    shape_records: list[dict[str, Any]] = []
+    ns = {**PPT_NS, "p": P_NS}
+
+    for shape in root.findall(".//p:sp", ns):
+        off_y = None
+        ext_cy = None
+        off = shape.find("p:spPr/a:xfrm/a:off", ns)
+        ext = shape.find("p:spPr/a:xfrm/a:ext", ns)
+        if off is not None and off.get("y"):
+            off_y = int(off.get("y"))
+        if ext is not None and ext.get("cy"):
+            ext_cy = int(ext.get("cy"))
         tx_body = shape.find(
             "p:txBody",
-            {
-                **PPT_NS,
-                "p": "http://schemas.openxmlformats.org/presentationml/2006/main",
-            },
+            ns,
         )
         if tx_body is None:
             continue
         for para in tx_body.findall("a:p", PPT_NS):
             text = para_text(para)
             if text:
-                paragraphs.append({"index": para_index, "text": text})
+                shape_records.append(
+                    {
+                        "index": para_index,
+                        "text": text,
+                        "y": off_y,
+                        "h": ext_cy,
+                    }
+                )
                 para_index += 1
-    return paragraphs
+
+    positioned = [item for item in shape_records if item["y"] is not None]
+    if positioned:
+        top_y = min(int(item["y"]) for item in positioned)
+        bottom_y = max(int(item["y"]) + int(item.get("h") or 0) for item in positioned)
+        span = max(1, bottom_y - top_y)
+        filtered: list[dict[str, Any]] = []
+        new_index = 1
+        for item in shape_records:
+            y = item.get("y")
+            h = int(item.get("h") or 0)
+            text = str(item["text"])
+            is_header_footer = False
+            if y is not None:
+                top_ratio = (int(y) - top_y) / span
+                bottom_ratio = (bottom_y - (int(y) + h)) / span
+                short_text = len(text) <= 28
+                is_header_footer = short_text and (
+                    top_ratio <= 0.08 or bottom_ratio <= 0.08
+                )
+            if is_header_footer:
+                continue
+            filtered.append({"index": new_index, "text": text})
+            new_index += 1
+        return filtered
+
+    return [
+        {"index": idx + 1, "text": item["text"]}
+        for idx, item in enumerate(shape_records)
+    ]
 
 
 def prepare_ppt_page(

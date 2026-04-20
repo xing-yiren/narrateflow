@@ -172,6 +172,15 @@ def apply_fade(wav: np.ndarray, sample_rate: int, fade_ms: int = 28) -> np.ndarr
     return wav
 
 
+def apply_volume_gain(wav: np.ndarray, gain: float) -> np.ndarray:
+    wav = np.asarray(wav, dtype=np.float32)
+    if gain <= 0:
+        raise ValueError("volume gain 必须大于 0。")
+    if abs(gain - 1.0) < 1e-6:
+        return wav
+    return np.clip(wav * gain, -0.98, 0.98).astype(np.float32)
+
+
 def apply_speed(wav: np.ndarray, speed: float) -> np.ndarray:
     if abs(speed - 1.0) < 1e-6:
         return wav.astype(np.float32)
@@ -336,6 +345,7 @@ def recalculate_manifest_timings(
 __all__ = [
     "ROOT",
     "OUTPUTS_DIR",
+    "apply_volume_gain",
     "build_voice_output_dir",
     "build_voice_file_stem",
     "load_model",

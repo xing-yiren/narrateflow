@@ -15,6 +15,21 @@ from video_compose.run_video_compose import run_video_compose
 
 ROOT = Path(__file__).resolve().parent
 OUTPUTS_DIR = ROOT / "outputs"
+STAGE_ALIASES = {
+    "1": "text",
+    "2": "profile",
+    "3": "voice",
+    "4": "timeline",
+    "5": "compose",
+    "text": "text",
+    "profile": "profile",
+    "voice": "voice",
+    "timeline": "timeline",
+    "compose": "compose",
+}
+
+STAGE_SELECTION_CHOICES = ["text", "profile", "voice", "timeline", "compose"]
+RUN_MODE_CHOICES = ["full", "only", "from"]
 
 
 def prompt_text(label: str, default: str | None = None, required: bool = True) -> str:
@@ -28,6 +43,22 @@ def prompt_text(label: str, default: str | None = None, required: bool = True) -
             return default
         if not required:
             return ""
+
+
+def prompt_existing_path(
+    label: str,
+    default: str | None = None,
+    kinds: tuple[str, ...] = ("file",),
+) -> str:
+    while True:
+        value = prompt_text(label, default=default, required=True)
+        path = Path(value)
+        if "file" in kinds and path.is_file():
+            return str(path)
+        if "dir" in kinds and path.is_dir():
+            return str(path)
+        expected = " or ".join(kinds)
+        print(f"Path does not exist or is not a valid {expected}: {path}")
 
 
 def prompt_choice(label: str, choices: list[str], default: str | None = None) -> str:
@@ -59,6 +90,23 @@ def resolve_profile_path(raw: str) -> Path:
     )
 
 
+def validate_existing_path(
+    raw: str, label: str, kinds: tuple[str, ...] = ("file",)
+) -> str:
+    path = Path(str(raw).strip().strip('"').strip("'"))
+    if ("file" in kinds and path.is_file()) or ("dir" in kinds and path.is_dir()):
+        return str(path)
+    expected = " or ".join(kinds)
+    raise FileNotFoundError(f"Invalid {label} ({expected}): {path}")
+
+
+def validate_existing_file(raw: str, label: str) -> str:
+    path = Path(str(raw).strip().strip('"').strip("'"))
+    if not path.is_file():
+        raise FileNotFoundError(f"Invalid {label}: {path}")
+    return str(path)
+
+
 def read_env_key(name: str) -> str | None:
     if os.environ.get(name):
         return os.environ[name]
@@ -75,49 +123,144 @@ def read_env_key(name: str) -> str | None:
     return None
 
 
+def needs_text_inputs(run_mode: str, target_stage: str | None) -> bool:
+    return run_mode == "full" or (run_mode == "only" and target_stage == "text")
+
+
+def needs_video_input(run_mode: str, target_stage: str | None) -> bool:
+    if run_mode == "full":
+        return True
+    return target_stage in {"timeline", "compose"} or (
+        run_mode == "from" and target_stage in {"profile", "voice"}
+    )
+
+
+def needs_profile_creation_inputs(
+    run_mode: str, config: dict[str, Any], target_stage: str | None
+) -> bool:
+    if target_stage == "profile":
+        return True
+    if run_mode == "full":
+        return not bool(config.get("profile"))
+    return False
+
+
 def resolve_initial_args(args: argparse.Namespace) -> dict[str, Any]:
     config: dict[str, Any] = {}
+    run_mode = args.run_mode
+    target_stage = args.target_stage
 
-    config["ppt"] = args.ppt or prompt_text("PPT path")
-    config["page"] = args.page or int(prompt_text("Page number"))
-    config["video"] = args.video or prompt_text("Target video path")
+    config["ppt"] = None
+    config["page"] = args.page
+    config["video"] = None
+    config["title_mode"] = args.title_mode
+    config["title_indices"] = set()
+    config["spoken_json"] = None
+    config["timeline"] = None
+    config["segments_manifest"] = None
 
-    title_mode = args.title_mode or prompt_choice(
-        "Title mode\n- first: treat the first paragraph as title\n- none: treat all paragraphs as narration\n- manual: choose title paragraph indices manually\nChoice",
-        ["first", "none", "manual"],
-        default="first",
-    )
-    config["title_mode"] = title_mode
-    if title_mode == "manual":
-        raw_indices = args.title_indices or prompt_text(
-            "Title paragraph indices (comma separated)", default="1"
+    if needs_text_inputs(run_mode, target_stage):
+        config["ppt"] = (
+            validate_existing_file(args.ppt, "PPT path")
+            if args.ppt
+            else prompt_existing_path("PPT path")
         )
-    elif title_mode == "first":
-        raw_indices = "1"
-    else:
-        raw_indices = ""
-    config["title_indices"] = parse_title_indices(raw_indices)
+        config["page"] = args.page or int(prompt_text("Page number"))
+        title_mode = args.title_mode or prompt_choice(
+            "Title mode\n- first: treat the first paragraph as title\n- none: treat all paragraphs as narration\n- manual: choose title paragraph indices manually\nChoice",
+            ["first", "none", "manual"],
+            default="first",
+        )
+        config["title_mode"] = title_mode
+        if title_mode == "manual":
+            raw_indices = args.title_indices or prompt_text(
+                "Title paragraph indices (comma separated)", default="1"
+            )
+        elif title_mode == "first":
+            raw_indices = "1"
+        else:
+            raw_indices = ""
+        config["title_indices"] = parse_title_indices(raw_indices)
+    elif target_stage in {"profile", "voice", "timeline"} and run_mode == "from":
+        config["spoken_json"] = (
+            validate_existing_file(args.spoken_json, "spoken json")
+            if args.spoken_json
+            else prompt_existing_path("Spoken JSON path")
+        )
+        if target_stage == "timeline":
+            config["segments_manifest"] = (
+                validate_existing_file(args.segments_manifest, "segments manifest")
+                if args.segments_manifest
+                else prompt_existing_path("Segments manifest path")
+            )
+    elif target_stage in {"voice", "timeline"}:
+        config["spoken_json"] = (
+            validate_existing_file(args.spoken_json, "spoken json")
+            if args.spoken_json
+            else prompt_existing_path("Spoken JSON path")
+        )
+    elif target_stage == "compose":
+        config["timeline"] = (
+            validate_existing_file(args.timeline, "timeline json")
+            if args.timeline
+            else prompt_existing_path("Timeline JSON path")
+        )
+        config["segments_manifest"] = (
+            validate_existing_file(args.segments_manifest, "segments manifest")
+            if args.segments_manifest
+            else prompt_existing_path("Segments manifest path")
+        )
+
+    if needs_video_input(run_mode, target_stage):
+        config["video"] = (
+            validate_existing_file(args.video, "video path")
+            if args.video
+            else prompt_existing_path("Target video path")
+        )
 
     profile = args.profile
     voice_name = args.voice_name
     ref_audio = args.ref_audio
     ref_text = args.ref_text
 
-    if not profile:
-        has_profile = prompt_choice(
-            "Do you already have a voice profile file", ["y", "n"], default="y"
-        )
-        if has_profile == "y":
-            profile = prompt_text("Voice profile path (.pt file or profile directory)")
-        else:
-            voice_name = voice_name or prompt_text("Voice name")
-            ref_audio = ref_audio or prompt_text(
+    if target_stage == "voice":
+        if not profile:
+            profile = prompt_existing_path(
+                "Voice profile path (.pt file or profile directory)",
+                kinds=("file", "dir"),
+            )
+    elif needs_profile_creation_inputs(run_mode, config, target_stage):
+        voice_name = voice_name or prompt_text("Voice name")
+        ref_audio = (
+            validate_existing_file(ref_audio, "reference audio path")
+            if ref_audio
+            else prompt_existing_path(
                 "Reference audio path (recommended 10-20 seconds)"
             )
-            ref_text = ref_text or prompt_text("Reference text")
+        )
+        ref_text = ref_text or prompt_text("Reference text")
+    elif run_mode == "full":
+        if not profile:
+            has_profile = prompt_choice(
+                "Do you already have a voice profile file", ["y", "n"], default="y"
+            )
+            if has_profile == "y":
+                profile = prompt_existing_path(
+                    "Voice profile path (.pt file or profile directory)",
+                    kinds=("file", "dir"),
+                )
+            else:
+                voice_name = voice_name or prompt_text("Voice name")
+                ref_audio = ref_audio or prompt_existing_path(
+                    "Reference audio path (recommended 10-20 seconds)"
+                )
+                ref_text = ref_text or prompt_text("Reference text")
+
     config["profile"] = str(resolve_profile_path(profile)) if profile else None
     config["voice_name"] = voice_name
-    config["ref_audio"] = ref_audio
+    config["ref_audio"] = (
+        validate_existing_file(ref_audio, "reference audio path") if ref_audio else None
+    )
     config["ref_text"] = ref_text
 
     config["stage1_output_dir"] = args.stage1_output_dir
@@ -126,14 +269,90 @@ def resolve_initial_args(args: argparse.Namespace) -> dict[str, Any]:
     config["timeline_output"] = args.timeline_output
     config["timeline_debug_dir"] = args.timeline_debug_dir
     config["compose_output_dir"] = args.compose_output_dir
+    config["paragraphs"] = args.paragraphs
+    config["volume_gain"] = args.volume_gain
     config["probe_mode"] = args.probe_mode
-    config["probe_times"] = args.probe_times or prompt_text(
-        "Initial probe times (comma separated, keyframe times)", default="0,10,20,30"
-    )
-    config["api_key"] = args.api_key or read_env_key("MAAS_API_KEY")
-    if not config["api_key"]:
-        config["api_key"] = prompt_text("MAAS_API_KEY", required=True)
+    if (
+        run_mode == "full"
+        or target_stage in {"timeline"}
+        or (run_mode == "from" and target_stage in {"profile", "voice"})
+    ):
+        config["probe_times"] = args.probe_times or prompt_text(
+            "Initial probe times (comma separated, keyframe times)",
+            default="0,10,20,30",
+        )
+        config["api_key"] = args.api_key or read_env_key("MAAS_API_KEY")
+        if not config["api_key"]:
+            config["api_key"] = prompt_text("MAAS_API_KEY", required=True)
+    else:
+        config["probe_times"] = args.probe_times
+        config["api_key"] = args.api_key or read_env_key("MAAS_API_KEY")
     return config
+
+
+def resolve_run_plan(args: argparse.Namespace) -> tuple[str, str | None]:
+    if args.only_stage:
+        target_stage = STAGE_ALIASES.get(args.only_stage, args.only_stage)
+        if target_stage in {"text", "profile", "voice", "timeline", "compose"}:
+            return "only", target_stage
+        raise ValueError(
+            "Unsupported --only-stage value. Use one of: 1/text, 2/profile, 3/voice, 4/timeline, 5/compose"
+        )
+
+    run_mode = prompt_choice(
+        "Run mode\n- full: run the full pipeline\n- only: run only one stage\n- from: start from one stage and continue\nChoice",
+        RUN_MODE_CHOICES,
+        default="full",
+    )
+    if run_mode == "full":
+        return "full", None
+    target_stage = prompt_choice(
+        "Choose stage",
+        STAGE_SELECTION_CHOICES,
+        default="voice" if run_mode == "from" else "text",
+    )
+    return run_mode, target_stage
+
+
+def ensure_profile_path(config: dict[str, Any]) -> Path:
+    profile = config.get("profile")
+    if not profile:
+        raise ValueError("Voice profile path is required for this stage.")
+    return Path(profile)
+
+
+def ensure_spoken_json_path(
+    config: dict[str, Any], stage1_result: dict[str, Any] | None = None
+) -> Path:
+    if stage1_result is not None:
+        return Path(stage1_result["spoken_path"])
+    spoken_json = config.get("spoken_json")
+    if not spoken_json:
+        raise ValueError("Spoken JSON path is required for this stage.")
+    return Path(spoken_json)
+
+
+def ensure_timeline_path(config: dict[str, Any]) -> Path:
+    timeline = config.get("timeline") or config.get("timeline_output")
+    if not timeline:
+        raise ValueError("Timeline JSON path is required for compose stage.")
+    return Path(timeline)
+
+
+def ensure_segments_manifest_path(config: dict[str, Any]) -> Path:
+    manifest = config.get("segments_manifest")
+    if not manifest:
+        raise ValueError("Segments manifest path is required for compose stage.")
+    return Path(manifest)
+
+
+def read_json_file(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def infer_page_from_spoken_json(spoken_json: Path) -> int:
+    payload = read_json_file(spoken_json)
+    return int(payload.get("page", 1))
 
 
 def stage_banner(index: int, total: int, name: str) -> None:
@@ -141,7 +360,13 @@ def stage_banner(index: int, total: int, name: str) -> None:
     print(f"[{index}/{total}] {name}")
 
 
-def ask_continue_or_stop(stage_name: str) -> str:
+def ask_continue_or_stop(stage_name: str, allow_back: bool = True) -> str:
+    if allow_back:
+        return prompt_choice(
+            f"{stage_name} review action\n- c: continue to the next stage\n- b: go back to the previous stage\n- s: stop here\nChoice",
+            ["c", "b", "s"],
+            default="c",
+        )
     return prompt_choice(
         f"{stage_name} review action\n- c: continue to the next stage\n- s: stop here\nChoice",
         ["c", "s"],
@@ -184,7 +409,13 @@ def show_stage2_summary(manifest_path: Path) -> dict[str, Any]:
     return payload
 
 
-def ask_stage2_action() -> str:
+def ask_stage2_action(allow_back: bool = True) -> str:
+    if allow_back:
+        return prompt_choice(
+            "Stage 2 review action\n- c: continue to the next stage\n- r: regenerate one or more paragraphs\n- b: go back to Stage 1\n- s: stop here\nChoice",
+            ["c", "r", "b", "s"],
+            default="c",
+        )
     return prompt_choice(
         "Stage 2 review action\n- c: continue to the next stage\n- r: regenerate one or more paragraphs\n- s: stop here\nChoice",
         ["c", "r", "s"],
@@ -197,6 +428,55 @@ def ask_regenerate_target() -> str:
         "Enter paragraph indices to regenerate (comma separated or 'all')",
         required=True,
     )
+
+
+def parse_paragraph_indices(raw: str) -> list[int]:
+    values = [int(item.strip()) for item in raw.split(",") if item.strip()]
+    if not values:
+        raise ValueError("At least one paragraph index is required.")
+    return values
+
+
+def ask_voice_generation_scope(
+    config: dict[str, Any],
+) -> tuple[list[int] | None, float | None]:
+    raw = config.get("paragraphs")
+    if raw is None:
+        raw = prompt_text(
+            "Paragraph indices to generate (comma separated, empty means all)",
+            default="",
+            required=False,
+        ).strip()
+    else:
+        raw = str(raw).strip()
+    if not raw:
+        if config.get("volume_gain") is not None:
+            print(
+                f"Applying volume gain {float(config['volume_gain'])} to all generated paragraphs."
+            )
+        return None, None
+    paragraph_indices = parse_paragraph_indices(raw)
+    if config.get("volume_gain") is not None:
+        print(
+            "Applying volume gain "
+            f"{float(config['volume_gain'])} to selected paragraphs: {','.join(str(item) for item in paragraph_indices)}"
+        )
+        return paragraph_indices, float(config["volume_gain"])
+    return paragraph_indices, ask_regenerate_volume_gain()
+
+
+def ask_regenerate_volume_gain() -> float | None:
+    raw = prompt_text(
+        "Optional volume gain for this regeneration (e.g. 0.9, 1.1, default empty)",
+        default="",
+        required=False,
+    ).strip()
+    if not raw:
+        return None
+    gain = float(raw)
+    if gain <= 0:
+        raise ValueError("Volume gain must be greater than 0.")
+    return gain
 
 
 def show_stage3_summary(timeline_path: Path) -> dict[str, Any]:
@@ -230,21 +510,24 @@ def default_stage1_output_dir(config: dict[str, Any]) -> Path | None:
 def default_timeline_output(spoken_json: Path, config: dict[str, Any]) -> Path:
     if config.get("timeline_output"):
         return Path(config["timeline_output"])
-    page = int(config["page"])
+    page = int(config.get("page") or infer_page_from_spoken_json(spoken_json))
     return spoken_json.parent / f"page_{page:02d}.timeline.final.json"
 
 
-def default_timeline_debug_dir(config: dict[str, Any]) -> Path | None:
+def default_timeline_debug_dir(
+    config: dict[str, Any], spoken_json: Path
+) -> Path | None:
     if config.get("timeline_debug_dir"):
         return Path(config["timeline_debug_dir"])
-    page = int(config["page"])
+    page = int(config.get("page") or infer_page_from_spoken_json(spoken_json))
     return OUTPUTS_DIR / "timeline_debug" / f"page_{page:02d}_debug"
 
 
-def default_compose_output_dir(spoken_json: Path, config: dict[str, Any]) -> Path:
+def default_compose_output_dir(source_path: Path, config: dict[str, Any]) -> Path:
     if config.get("compose_output_dir"):
         return Path(config["compose_output_dir"])
-    page_name = f"page_{int(config['page']):02d}_{slugify(Path(config['video']).stem, max_len=36)}"
+    page_token = source_path.stem.replace(".timeline", "")
+    page_name = f"{slugify(page_token, max_len=36)}_{slugify(Path(config['video']).stem, max_len=36)}"
     return OUTPUTS_DIR / "composed" / page_name
 
 
@@ -269,40 +552,64 @@ def run_stage2_profile(config: dict[str, Any]) -> Path:
 
 
 def run_stage2_voice(
-    config: dict[str, Any], spoken_json: Path, profile_path: Path
+    config: dict[str, Any],
+    spoken_json: Path,
+    profile_path: Path,
+    paragraph_indices: list[int] | None = None,
+    volume_gain: float | None = None,
 ) -> Path:
-    result = run_voice_generate(
-        spoken_json=spoken_json,
-        profile_path=profile_path,
-        voice_name=config.get("voice_name") or profile_path.stem,
-        output_dir=Path(config["voice_output_dir"])
-        if config.get("voice_output_dir")
-        else None,
-    )
-    return Path(result["manifest_path"])
+    if not paragraph_indices:
+        result = run_voice_generate(
+            spoken_json=spoken_json,
+            profile_path=profile_path,
+            voice_name=config.get("voice_name") or profile_path.stem,
+            volume_gain=volume_gain,
+            output_dir=Path(config["voice_output_dir"])
+            if config.get("voice_output_dir")
+            else None,
+        )
+        return Path(result["manifest_path"])
 
-
-def rerun_stage2_for_target(
-    config: dict[str, Any], spoken_json: Path, profile_path: Path, target: str
-) -> Path:
-    if target.strip().lower() == "all":
-        return run_stage2_voice(config, spoken_json, profile_path)
-    indices = [int(item.strip()) for item in target.split(",") if item.strip()]
     manifest_path: Path | None = None
-    for paragraph_index in indices:
+    for paragraph_index in paragraph_indices:
         result = run_voice_generate(
             spoken_json=spoken_json,
             profile_path=profile_path,
             voice_name=config.get("voice_name") or profile_path.stem,
             paragraph_index=paragraph_index,
+            volume_gain=volume_gain,
             output_dir=Path(config["voice_output_dir"])
             if config.get("voice_output_dir")
             else None,
         )
         manifest_path = Path(result["manifest_path"])
     if manifest_path is None:
-        raise ValueError("No valid paragraph indices provided for regeneration.")
+        raise ValueError("No valid paragraph indices provided for generation.")
     return manifest_path
+
+
+def rerun_stage2_for_target(
+    config: dict[str, Any],
+    spoken_json: Path,
+    profile_path: Path,
+    target: str,
+    volume_gain: float | None = None,
+) -> Path:
+    if target.strip().lower() == "all":
+        return run_stage2_voice(
+            config,
+            spoken_json,
+            profile_path,
+            paragraph_indices=None,
+            volume_gain=volume_gain,
+        )
+    return run_stage2_voice(
+        config,
+        spoken_json,
+        profile_path,
+        paragraph_indices=parse_paragraph_indices(target),
+        volume_gain=volume_gain,
+    )
 
 
 def run_stage3(config: dict[str, Any], spoken_json: Path) -> Path:
@@ -311,7 +618,7 @@ def run_stage3(config: dict[str, Any], spoken_json: Path) -> Path:
         video=Path(config["video"]),
         spoken_json=spoken_json,
         output=output,
-        debug_dir=default_timeline_debug_dir(config),
+        debug_dir=default_timeline_debug_dir(config, spoken_json),
         api_key=config["api_key"],
         probe_mode=config["probe_mode"],
         probe_times=config["probe_times"],
@@ -344,61 +651,221 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--stage1-output-dir")
     parser.add_argument("--profile-output-dir")
     parser.add_argument("--voice-output-dir")
+    parser.add_argument("--spoken-json")
+    parser.add_argument("--timeline")
+    parser.add_argument("--segments-manifest")
     parser.add_argument("--timeline-output")
     parser.add_argument("--timeline-debug-dir")
     parser.add_argument("--compose-output-dir")
+    parser.add_argument("--paragraphs")
+    parser.add_argument("--volume-gain", type=float)
     parser.add_argument(
         "--probe-mode", choices=["keyframes", "times"], default="keyframes"
     )
     parser.add_argument("--probe-times")
     parser.add_argument("--api-key")
+    parser.add_argument(
+        "--only-stage",
+        help="Run only one stage. Supported values: 1/text, 2/profile, 3/voice, 4/timeline, 5/compose",
+    )
     return parser
 
 
 def main() -> None:
     args = build_parser().parse_args()
+    run_mode, target_stage = resolve_run_plan(args)
+    args.run_mode = run_mode
+    args.target_stage = target_stage
     config = resolve_initial_args(args)
 
     total = 5
 
-    stage_banner(1, total, "Text Processing")
-    stage1_result = run_stage1(config)
-    show_stage1_summary(stage1_result)
-    if ask_continue_or_stop("Stage 1") == "s":
-        return
-
-    profile_path = Path(config["profile"]) if config.get("profile") else None
-    if profile_path is None:
-        stage_banner(2, total, "Voice Profile Generation")
-        profile_path = run_stage2_profile(config)
-        config["profile"] = str(profile_path)
-        show_profile_summary(profile_path)
-    else:
-        print()
-        print(f"[2/{total}] Voice Profile Generation (skipped, using existing profile)")
-        print(f"profile_path: {profile_path}")
-
-    stage_banner(3, total, "Voice Generation")
-    manifest_path = run_stage2_voice(
-        config, Path(stage1_result["spoken_path"]), profile_path
-    )
-    while True:
-        show_stage2_summary(manifest_path)
-        action = ask_stage2_action()
-        if action == "c":
-            break
-        if action == "s":
+    if run_mode == "only":
+        if target_stage == "text":
+            stage_banner(1, total, "Text Processing")
+            stage1_result = run_stage1(config)
+            show_stage1_summary(stage1_result)
             return
-        target = ask_regenerate_target()
-        manifest_path = rerun_stage2_for_target(
-            config, Path(stage1_result["spoken_path"]), profile_path, target
-        )
+        if target_stage == "profile":
+            stage_banner(2, total, "Voice Profile Generation")
+            profile_path = run_stage2_profile(config)
+            config["profile"] = str(profile_path)
+            show_profile_summary(profile_path)
+            return
+        if target_stage == "voice":
+            stage_banner(3, total, "Voice Generation")
+            paragraph_indices, volume_gain = ask_voice_generation_scope(config)
+            manifest_path = run_stage2_voice(
+                config,
+                ensure_spoken_json_path(config),
+                ensure_profile_path(config),
+                paragraph_indices=paragraph_indices,
+                volume_gain=volume_gain,
+            )
+            while True:
+                show_stage2_summary(manifest_path)
+                action = prompt_choice(
+                    "Stage 2 review action\n- r: regenerate one or more paragraphs\n- s: stop here\nChoice",
+                    ["r", "s"],
+                    default="s",
+                )
+                if action == "s":
+                    return
+                target = ask_regenerate_target()
+                volume_gain = ask_regenerate_volume_gain()
+                manifest_path = rerun_stage2_for_target(
+                    config,
+                    ensure_spoken_json_path(config),
+                    ensure_profile_path(config),
+                    target,
+                    volume_gain=volume_gain,
+                )
+        if target_stage == "timeline":
+            stage_banner(4, total, "Timeline Alignment")
+            timeline_path = run_stage3(config, ensure_spoken_json_path(config))
+            show_stage3_summary(timeline_path)
+            return
+        if target_stage == "compose":
+            stage_banner(5, total, "Video Composition")
+            composed_path = run_stage4(
+                config,
+                ensure_timeline_path(config),
+                ensure_segments_manifest_path(config),
+            )
+            show_stage4_summary(composed_path, composed_path.parent)
+            return
 
-    stage_banner(4, total, "Timeline Alignment")
-    timeline_path = run_stage3(config, Path(stage1_result["spoken_path"]))
-    show_stage3_summary(timeline_path)
-    if ask_continue_or_stop("Stage 4") == "s":
-        return
+    stage1_result: dict[str, Any] | None = None
+    manifest_path: Path | None = None
+    timeline_path: Path | None = None
+
+    if run_mode == "full":
+        while True:
+            stage_banner(1, total, "Text Processing")
+            stage1_result = run_stage1(config)
+            show_stage1_summary(stage1_result)
+            action = ask_continue_or_stop("Stage 1")
+            if action == "s":
+                return
+            if action == "c":
+                break
+
+    if run_mode == "from" and target_stage in {"voice", "timeline"}:
+        stage1_result = {"spoken_path": ensure_spoken_json_path(config)}
+
+    if run_mode in {"full", "from"} and target_stage in {None, "profile", "voice"}:
+        while True:
+            profile_path = Path(config["profile"]) if config.get("profile") else None
+            if profile_path is None:
+                stage_banner(2, total, "Voice Profile Generation")
+                profile_path = run_stage2_profile(config)
+                config["profile"] = str(profile_path)
+                show_profile_summary(profile_path)
+            else:
+                print()
+                print(
+                    f"[2/{total}] Voice Profile Generation (skipped, using existing profile)"
+                )
+                print(f"profile_path: {profile_path}")
+
+            stage_banner(3, total, "Voice Generation")
+            paragraph_indices, volume_gain = ask_voice_generation_scope(config)
+            manifest_path = run_stage2_voice(
+                config,
+                ensure_spoken_json_path(config, stage1_result),
+                profile_path,
+                paragraph_indices=paragraph_indices,
+                volume_gain=volume_gain,
+            )
+            while True:
+                show_stage2_summary(manifest_path)
+                action = ask_stage2_action(allow_back=run_mode == "full")
+                if action == "c":
+                    break
+                if action == "s":
+                    return
+                if action == "b":
+                    break
+                target = ask_regenerate_target()
+                volume_gain = ask_regenerate_volume_gain()
+                manifest_path = rerun_stage2_for_target(
+                    config,
+                    ensure_spoken_json_path(config, stage1_result),
+                    profile_path,
+                    target,
+                    volume_gain=volume_gain,
+                )
+            if action == "b":
+                if run_mode == "from":
+                    continue
+                continue
+            break
+
+    if run_mode in {"full", "from"} and target_stage in {
+        None,
+        "profile",
+        "voice",
+        "timeline",
+    }:
+        while True:
+            stage_banner(4, total, "Timeline Alignment")
+            timeline_path = run_stage3(
+                config, ensure_spoken_json_path(config, stage1_result)
+            )
+            show_stage3_summary(timeline_path)
+            action = ask_continue_or_stop(
+                "Stage 4",
+                allow_back=not (run_mode == "from" and target_stage == "timeline"),
+            )
+            if action == "s":
+                return
+            if action == "b":
+                profile_path = (
+                    Path(config["profile"]) if config.get("profile") else None
+                )
+                stage_banner(3, total, "Voice Generation")
+                paragraph_indices, volume_gain = ask_voice_generation_scope(config)
+                manifest_path = run_stage2_voice(
+                    config,
+                    ensure_spoken_json_path(config, stage1_result),
+                    profile_path,
+                    paragraph_indices=paragraph_indices,
+                    volume_gain=volume_gain,
+                )
+                while True:
+                    show_stage2_summary(manifest_path)
+                    action2 = ask_stage2_action(allow_back=False)
+                    if action2 == "c":
+                        break
+                    if action2 == "s":
+                        return
+                    if action2 == "b":
+                        break
+                    target = ask_regenerate_target()
+                    volume_gain = ask_regenerate_volume_gain()
+                    manifest_path = rerun_stage2_for_target(
+                        config,
+                        ensure_spoken_json_path(config, stage1_result),
+                        profile_path,
+                        target,
+                        volume_gain=volume_gain,
+                    )
+                if action2 == "b":
+                    continue
+                continue
+            break
+
+    if run_mode == "from" and target_stage == "compose":
+        timeline_path = ensure_timeline_path(config)
+        manifest_path = ensure_segments_manifest_path(config)
+
+    if manifest_path is None and run_mode == "from" and target_stage == "timeline":
+        manifest_path = ensure_segments_manifest_path(config)
+
+    if manifest_path is None:
+        raise ValueError("Segments manifest is required before video composition.")
+    if timeline_path is None:
+        raise ValueError("Timeline path is required before video composition.")
 
     stage_banner(5, total, "Video Composition")
     composed_path = run_stage4(config, timeline_path, manifest_path)
