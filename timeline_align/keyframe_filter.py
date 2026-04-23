@@ -13,13 +13,67 @@ def compute_change_score(curr: np.ndarray, prev: np.ndarray) -> float:
     return float(np.mean(diff))
 
 
-def compute_subtitle_score(curr: np.ndarray, prev: np.ndarray) -> float:
-    h, w = curr.shape[:2]
-    y0 = int(h * 0.78)
-    subtitle_curr = curr[y0:h, 0:w]
-    subtitle_prev = prev[y0:h, 0:w]
-    diff = cv2.absdiff(subtitle_curr, subtitle_prev)
+def extract_text_like_mask(gray: np.ndarray) -> np.ndarray:
+    grad_x = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+    grad_y = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+    magnitude = cv2.convertScaleAbs(
+        cv2.addWeighted(cv2.absdiff(grad_x, 0), 1.0, cv2.absdiff(grad_y, 0), 1.0, 0)
+    )
+    _, thresh = cv2.threshold(magnitude, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 3))
+    closed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+    return closed
+
+
+def compute_text_like_score(curr: np.ndarray, prev: np.ndarray) -> float:
+    curr_mask = extract_text_like_mask(curr)
+    prev_mask = extract_text_like_mask(prev)
+    diff = cv2.absdiff(curr_mask, prev_mask)
     return float(np.mean(diff))
+
+
+def insert_stable_fill_candidates(
+    candidates: list[dict],
+    cap: cv2.VideoCapture,
+    fps: float,
+    out_dir: Path,
+    fill_gap_sec: float = 6.0,
+) -> list[dict]:
+    if len(candidates) < 2:
+        return candidates
+
+    enriched: list[dict] = []
+    for index, current in enumerate(candidates):
+        enriched.append(current)
+        if index == len(candidates) - 1:
+            continue
+        nxt = candidates[index + 1]
+        gap = float(nxt["time"] - current["time"])
+        if gap < fill_gap_sec:
+            continue
+        fill_count = 1 if gap < fill_gap_sec * 1.8 else 2
+        for fill_index in range(fill_count):
+            ratio = (fill_index + 1) / (fill_count + 1)
+            t = round(float(current["time"]) + gap * ratio, 2)
+            frame_idx = int(round(t * fps))
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+            ok, frame = cap.read()
+            if not ok:
+                continue
+            image_path = out_dir / f"kf_{t:07.2f}.png"
+            cv2.imwrite(str(image_path), frame)
+            enriched.append(
+                {
+                    "time": t,
+                    "frame_index": frame_idx,
+                    "image_path": str(image_path),
+                    "global_score": 0.0,
+                    "text_like_score": 0.0,
+                    "reason": ["stable_fill"],
+                    "type": "stable_fill",
+                }
+            )
+    return sorted(enriched, key=lambda item: float(item["time"]))
 
 
 def sample_keyframes(
@@ -60,10 +114,10 @@ def sample_keyframes(
 
         if prev_gray is None:
             global_score = 999.0
-            subtitle_score = 999.0
+            text_like_score = 999.0
         else:
             global_score = compute_change_score(gray, prev_gray)
-            subtitle_score = compute_subtitle_score(gray, prev_gray)
+            text_like_score = compute_text_like_score(gray, prev_gray)
 
         should_keep = False
         reason = []
@@ -71,22 +125,26 @@ def sample_keyframes(
             if global_score >= global_threshold:
                 should_keep = True
                 reason.append("global_change")
-            if subtitle_score >= subtitle_threshold:
+            if text_like_score >= subtitle_threshold:
                 should_keep = True
-                reason.append("subtitle_change")
+                reason.append("text_like_change")
 
         if should_keep:
             timestamp = round(index / fps, 2)
             image_path = out_dir / f"kf_{timestamp:07.2f}.png"
             cv2.imwrite(str(image_path), frame)
+            frame_type = (
+                "text_like_change" if "text_like_change" in reason else "scene_change"
+            )
             candidates.append(
                 {
                     "time": timestamp,
                     "frame_index": index,
                     "image_path": str(image_path),
                     "global_score": round(global_score, 3),
-                    "subtitle_score": round(subtitle_score, 3),
+                    "text_like_score": round(text_like_score, 3),
                     "reason": reason,
+                    "type": frame_type,
                 }
             )
             last_keep_frame = index
@@ -94,6 +152,7 @@ def sample_keyframes(
         prev_gray = gray
         index += 1
 
+    candidates = insert_stable_fill_candidates(candidates, cap, fps, out_dir)
     cap.release()
     return {
         "video_path": str(video_path),

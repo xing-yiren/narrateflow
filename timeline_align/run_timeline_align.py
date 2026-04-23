@@ -30,6 +30,41 @@ def load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def auto_select_probe_times(
+    keyframes_json: Path, desired_count: int = 8
+) -> list[float]:
+    payload = load_json(keyframes_json)
+    candidates = payload.get("candidates", [])
+    if not candidates:
+        return []
+
+    priority = {
+        "text_like_change": 0,
+        "scene_change": 1,
+        "stable_fill": 2,
+    }
+    desired_count = max(3, min(desired_count, len(candidates)))
+    buckets: list[list[dict]] = [[] for _ in range(desired_count)]
+    for idx, candidate in enumerate(candidates):
+        bucket_idx = min(desired_count - 1, int(idx * desired_count / len(candidates)))
+        buckets[bucket_idx].append(candidate)
+
+    selected: list[float] = []
+    for bucket in buckets:
+        if not bucket:
+            continue
+        best = sorted(
+            bucket,
+            key=lambda item: (
+                priority.get(item.get("type", "stable_fill"), 99),
+                -float(item.get("text_like_score", 0.0)),
+                -float(item.get("global_score", 0.0)),
+            ),
+        )[0]
+        selected.append(round(float(best["time"]), 2))
+    return sorted({value for value in selected})
+
+
 def build_probe_payload(
     mode: str,
     spoken_json: Path,
@@ -40,9 +75,13 @@ def build_probe_payload(
     times_text: str | None = None,
     paragraphs_text: str | None = None,
     frame_hint: str | None = None,
+    body_start_paragraph_index: int = 2,
 ) -> dict[str, Any]:
     resolved_api_key = load_api_key(api_key)
     title, segments = load_page_segments(spoken_json)
+    segments = [
+        s for s in segments if int(s.get("paragraph_index", 0)) >= body_start_paragraph_index
+    ]
 
     if paragraphs_text:
         paragraph_indices = {
@@ -53,11 +92,14 @@ def build_probe_payload(
         ]
 
     if mode == "keyframes":
-        if not keyframes_json or not times_text:
-            raise SystemExit(
-                "--keyframes-json and --times are required for mode=keyframes"
-            )
-        times = [float(x.strip()) for x in times_text.split(",") if x.strip()]
+        if not keyframes_json:
+            raise SystemExit("--keyframes-json is required for mode=keyframes")
+        if times_text:
+            times = [float(x.strip()) for x in times_text.split(",") if x.strip()]
+        else:
+            times = auto_select_probe_times(Path(keyframes_json))
+            if not times:
+                raise SystemExit("No usable keyframes found for automatic probing")
         frames = load_selected_keyframes(Path(keyframes_json), times)
         hint_builder = (
             lambda frame: f"当前视频时间点约为 {frame['time']} 秒。请在候选段落中判断。"
@@ -163,7 +205,9 @@ def build_rough(probe_payload: dict, min_confidence: float, step_sec: float) -> 
 
 
 def build_final(
-    spoken_json: Path, anchors_payloads: list[dict[str, Any]]
+    spoken_json: Path,
+    anchors_payloads: list[dict[str, Any]],
+    body_start_paragraph_index: int = 2,
 ) -> dict[str, Any]:
     spoken_payload = load_json(spoken_json)
     paragraph_texts = {1: spoken_payload.get("title_text", "")}
@@ -221,13 +265,17 @@ def build_final(
 
     timeline = []
     for idx in range(1, max(paragraph_texts.keys()) + 1):
+        timeline_enabled = idx == 1 or idx >= body_start_paragraph_index
         item = {
             "paragraph_index": idx,
             "role": "title" if idx == 1 else "voice",
             "spoken_text": paragraph_texts.get(idx, ""),
-            "matched": idx in anchor_map,
+            "timeline_enabled": timeline_enabled,
+            "matched": timeline_enabled and idx in anchor_map,
         }
-        if idx in anchor_map:
+        if idx not in {1} and not timeline_enabled:
+            item["review_status"] = "cover_intro"
+        if timeline_enabled and idx in anchor_map:
             item.update(anchor_map[idx])
         timeline.append(item)
 
@@ -237,6 +285,7 @@ def build_final(
         "timeline": timeline,
         "notes": [
             "paragraph 1 是标题，不参与配音。",
+            f"paragraph_index < {body_start_paragraph_index} 的正文段当前不参与正文时间轴对齐。",
             "其余段落的 anchor_start/anchor_end 为当前阶段汇总后的正式锚点范围。",
             "该时间轴允许静默区，不要求整段视频都填满音频。",
         ],
@@ -256,6 +305,7 @@ def build_public_timeline(
             {
                 "paragraph_index": int(item["paragraph_index"]),
                 "spoken_text": item.get("spoken_text", ""),
+                "timeline_enabled": bool(item.get("timeline_enabled", True)),
                 "matched": bool(item.get("matched", False)),
                 "start": round(float(item["anchor_start"]), 3)
                 if item.get("matched")
@@ -263,7 +313,8 @@ def build_public_timeline(
                 "end_hint": round(float(item["anchor_end"]), 3)
                 if item.get("matched")
                 else None,
-                "review_status": "needs_manual" if not item.get("matched") else "auto",
+                "review_status": item.get("review_status")
+                or ("needs_manual" if not item.get("matched") else "auto"),
             }
         )
     return {
@@ -331,7 +382,11 @@ def enforce_monotonic_starts(
 
 def build_timeline_status(final_payload: dict[str, Any]) -> dict[str, Any]:
     timeline = final_payload.get("timeline", [])
-    voice_items = [item for item in timeline if item.get("role") == "voice"]
+    voice_items = [
+        item
+        for item in timeline
+        if item.get("role") == "voice" and item.get("timeline_enabled", True)
+    ]
     matched_items = [item for item in voice_items if item.get("matched")]
     missing_indices = [
         int(item["paragraph_index"]) for item in voice_items if not item.get("matched")
@@ -357,7 +412,11 @@ def collect_missing_ranges(
 ) -> list[dict[str, Any]]:
     timeline = final_payload.get("timeline", [])
     missing_ranges: list[dict[str, Any]] = []
-    voice_items = [item for item in timeline if item.get("role") == "voice"]
+    voice_items = [
+        item
+        for item in timeline
+        if item.get("role") == "voice" and item.get("timeline_enabled", True)
+    ]
     for index, item in enumerate(voice_items):
         if item.get("matched"):
             continue
@@ -407,6 +466,43 @@ def build_gap_probe_times(start: float, end: float, limit: int = 3) -> list[floa
     return [round(start + step * i, 2) for i in range(1, count + 1)]
 
 
+def select_gap_probe_times(
+    keyframes_json: Path,
+    start: float,
+    end: float,
+    limit: int = 3,
+) -> list[float]:
+    if end <= start:
+        return []
+    payload = load_json(keyframes_json)
+    candidates = payload.get("candidates", [])
+    priority = {
+        "text_like_change": 0,
+        "scene_change": 1,
+        "stable_fill": 2,
+    }
+    gap_candidates = [
+        item
+        for item in candidates
+        if start <= float(item.get("time", -1)) <= end
+    ]
+    midpoint = (start + end) / 2.0
+    ranked = sorted(
+        gap_candidates,
+        key=lambda item: (
+            priority.get(item.get("type", "stable_fill"), 99),
+            abs(float(item.get("time", 0.0)) - midpoint),
+            -float(item.get("text_like_score", 0.0)),
+            -float(item.get("global_score", 0.0)),
+        ),
+    )
+    selected = [round(float(item["time"]), 2) for item in ranked[:limit]]
+    if len(selected) >= limit:
+        return sorted(dict.fromkeys(selected))
+    fallback = build_gap_probe_times(start, end, limit=limit)
+    return sorted(dict.fromkeys(selected + fallback))[:limit]
+
+
 def run_gap_reprobe(
     video: Path,
     spoken_json: Path,
@@ -415,13 +511,14 @@ def run_gap_reprobe(
     api_key: str | None,
     video_duration: float,
     round_index: int,
+    keyframes_json: Path | None = None,
     start_only: bool = False,
 ) -> list[dict[str, Any]]:
     gap_payloads: list[dict[str, Any]] = []
     voice_timeline = [
         item
         for item in final_payload.get("timeline", [])
-        if item.get("role") == "voice"
+        if item.get("role") == "voice" and item.get("timeline_enabled", True)
     ]
     missing_ranges = collect_missing_ranges(
         final_payload, video_duration=video_duration, start_only=start_only
@@ -429,7 +526,14 @@ def run_gap_reprobe(
     if len(missing_ranges) > 3:
         missing_ranges = missing_ranges[:3]
     for item in missing_ranges:
-        times = build_gap_probe_times(item["start"], item["end"])
+        if keyframes_json is not None and keyframes_json.exists():
+            times = select_gap_probe_times(
+                keyframes_json=keyframes_json,
+                start=item["start"],
+                end=item["end"],
+            )
+        else:
+            times = build_gap_probe_times(item["start"], item["end"])
         if not times:
             continue
         current_idx = int(item["paragraph_index"])
@@ -474,7 +578,11 @@ def run_timeline_align(
     subtitle_threshold: float = 5.5,
     skip_keyframes: bool = False,
     gap_start_only: bool = True,
+    cover_paragraph_index: int | None = None,
 ) -> dict[str, Any]:
+    body_start_paragraph_index = (
+        int(cover_paragraph_index) + 1 if cover_paragraph_index is not None else 2
+    )
     page_stem = output.stem.replace(".timeline", "")
     resolved_debug_dir = debug_dir or output.parent / "debug" / page_stem
     resolved_debug_dir.mkdir(parents=True, exist_ok=True)
@@ -505,6 +613,7 @@ def run_timeline_align(
         keyframes_json=str(keyframes_json) if probe_mode == "keyframes" else None,
         times_text=probe_times,
         paragraphs_text=probe_paragraphs,
+        body_start_paragraph_index=body_start_paragraph_index,
     )
     write_json(probe_json, probe_payload)
 
@@ -519,7 +628,9 @@ def run_timeline_align(
     )
     anchor_payloads: list[dict[str, Any]] = [rough_payload]
     final_payload = build_final(
-        spoken_json=spoken_json, anchors_payloads=anchor_payloads
+        spoken_json=spoken_json,
+        anchors_payloads=anchor_payloads,
+        body_start_paragraph_index=body_start_paragraph_index,
     )
     reprobe_rounds: list[dict[str, Any]] = []
 
@@ -536,6 +647,7 @@ def run_timeline_align(
                 api_key=api_key,
                 video_duration=video_duration,
                 round_index=round_index,
+                keyframes_json=keyframes_json,
                 start_only=gap_start_only,
             )
         except Exception as exc:
@@ -579,6 +691,7 @@ def run_timeline_align(
         next_final_payload = build_final(
             spoken_json=spoken_json,
             anchors_payloads=anchor_payloads,
+            body_start_paragraph_index=body_start_paragraph_index,
         )
         after_missing = list(next_final_payload.get("missing_paragraph_indices", []))
         newly_matched = [idx for idx in before_missing if idx not in after_missing]
@@ -627,6 +740,7 @@ def main() -> None:
     parser.add_argument("--skip-keyframes", action="store_true")
     parser.add_argument("--gap-start-only", action="store_true")
     parser.add_argument("--disable-gap-start-only", action="store_true")
+    parser.add_argument("--cover-paragraph-index", type=int, default=None)
     args = parser.parse_args()
 
     result = run_timeline_align(
@@ -646,6 +760,7 @@ def main() -> None:
         subtitle_threshold=args.subtitle_threshold,
         skip_keyframes=args.skip_keyframes,
         gap_start_only=(False if args.disable_gap_start_only else True),
+        cover_paragraph_index=args.cover_paragraph_index,
     )
     print(
         json.dumps(

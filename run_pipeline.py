@@ -135,13 +135,21 @@ def needs_video_input(run_mode: str, target_stage: str | None) -> bool:
     )
 
 
+def needs_cover_options(run_mode: str, target_stage: str | None) -> bool:
+    if run_mode == "full":
+        return True
+    if target_stage in {"timeline", "compose"}:
+        return True
+    return run_mode == "from" and target_stage in {"profile", "voice"}
+
+
 def needs_profile_creation_inputs(
     run_mode: str, config: dict[str, Any], target_stage: str | None
 ) -> bool:
     if target_stage == "profile":
         return True
-    if run_mode == "full":
-        return not bool(config.get("profile"))
+    if run_mode == "from" and target_stage == "profile":
+        return True
     return False
 
 
@@ -269,6 +277,38 @@ def resolve_initial_args(args: argparse.Namespace) -> dict[str, Any]:
     config["timeline_output"] = args.timeline_output
     config["timeline_debug_dir"] = args.timeline_debug_dir
     config["compose_output_dir"] = args.compose_output_dir
+    cover_image = (
+        validate_existing_file(args.cover_image, "cover image") if args.cover_image else None
+    )
+    cover_duration_sec = args.cover_duration_sec
+    cover_paragraph_index = args.cover_paragraph_index
+    if cover_image is None and needs_cover_options(run_mode, target_stage):
+        use_cover = prompt_choice(
+            "Do you want to prepend a cover image before the main video",
+            ["y", "n"],
+            default="n",
+        )
+        if use_cover == "y":
+            cover_image = prompt_existing_path("Cover image path")
+            cover_paragraph_index = int(
+                prompt_text(
+                    "Cover paragraph index",
+                    default=str(cover_paragraph_index or 2),
+                )
+            )
+            if cover_duration_sec is None:
+                raw_cover_duration = prompt_text(
+                    "Optional cover duration in seconds (empty means use cover paragraph audio duration)",
+                    default="",
+                    required=False,
+                ).strip()
+                cover_duration_sec = float(raw_cover_duration) if raw_cover_duration else None
+        else:
+            cover_paragraph_index = None
+            cover_duration_sec = None
+    config["cover_image"] = cover_image
+    config["cover_duration_sec"] = cover_duration_sec
+    config["cover_paragraph_index"] = cover_paragraph_index
     config["paragraphs"] = args.paragraphs
     config["volume_gain"] = args.volume_gain
     config["probe_mode"] = args.probe_mode
@@ -439,9 +479,12 @@ def parse_paragraph_indices(raw: str) -> list[int]:
 
 def ask_voice_generation_scope(
     config: dict[str, Any],
+    prompt_if_missing: bool = True,
 ) -> tuple[list[int] | None, float | None]:
     raw = config.get("paragraphs")
     if raw is None:
+        if not prompt_if_missing:
+            return None, None
         raw = prompt_text(
             "Paragraph indices to generate (comma separated, empty means all)",
             default="",
@@ -622,6 +665,11 @@ def run_stage3(config: dict[str, Any], spoken_json: Path) -> Path:
         api_key=config["api_key"],
         probe_mode=config["probe_mode"],
         probe_times=config["probe_times"],
+        cover_paragraph_index=(
+            int(config.get("cover_paragraph_index") or 2)
+            if config.get("cover_image")
+            else None
+        ),
     )
     return output
 
@@ -634,6 +682,9 @@ def run_stage4(
         timeline=timeline_path,
         segments_manifest=manifest_path,
         output_dir=default_compose_output_dir(timeline_path, config),
+        cover_image=Path(config["cover_image"]) if config.get("cover_image") else None,
+        cover_duration_sec=config.get("cover_duration_sec"),
+        cover_paragraph_index=int(config.get("cover_paragraph_index") or 2),
     )
 
 
@@ -657,6 +708,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeline-output")
     parser.add_argument("--timeline-debug-dir")
     parser.add_argument("--compose-output-dir")
+    parser.add_argument("--cover-image")
+    parser.add_argument("--cover-duration-sec", type=float)
+    parser.add_argument("--cover-paragraph-index", type=int, default=2)
     parser.add_argument("--paragraphs")
     parser.add_argument("--volume-gain", type=float)
     parser.add_argument(
@@ -750,10 +804,58 @@ def main() -> None:
             if action == "c":
                 break
 
+        while True:
+            profile_path = Path(config["profile"]) if config.get("profile") else None
+            if profile_path is None:
+                stage_banner(2, total, "Voice Profile Generation")
+                profile_path = run_stage2_profile(config)
+                config["profile"] = str(profile_path)
+                show_profile_summary(profile_path)
+            else:
+                print()
+                print(
+                    f"[2/{total}] Voice Profile Generation (skipped, using existing profile)"
+                )
+                print(f"profile_path: {profile_path}")
+
+            stage_banner(3, total, "Voice Generation")
+            paragraph_indices, volume_gain = ask_voice_generation_scope(
+                config,
+                prompt_if_missing=False,
+            )
+            manifest_path = run_stage2_voice(
+                config,
+                ensure_spoken_json_path(config, stage1_result),
+                profile_path,
+                paragraph_indices=paragraph_indices,
+                volume_gain=volume_gain,
+            )
+            while True:
+                show_stage2_summary(manifest_path)
+                action = ask_stage2_action(allow_back=True)
+                if action == "c":
+                    break
+                if action == "s":
+                    return
+                if action == "b":
+                    break
+                target = ask_regenerate_target()
+                volume_gain = ask_regenerate_volume_gain()
+                manifest_path = rerun_stage2_for_target(
+                    config,
+                    ensure_spoken_json_path(config, stage1_result),
+                    profile_path,
+                    target,
+                    volume_gain=volume_gain,
+                )
+            if action == "b":
+                continue
+            break
+
     if run_mode == "from" and target_stage in {"voice", "timeline"}:
         stage1_result = {"spoken_path": ensure_spoken_json_path(config)}
 
-    if run_mode in {"full", "from"} and target_stage in {None, "profile", "voice"}:
+    if run_mode == "from" and target_stage in {"profile", "voice"}:
         while True:
             profile_path = Path(config["profile"]) if config.get("profile") else None
             if profile_path is None:
@@ -796,17 +898,12 @@ def main() -> None:
                     volume_gain=volume_gain,
                 )
             if action == "b":
-                if run_mode == "from":
-                    continue
                 continue
             break
 
-    if run_mode in {"full", "from"} and target_stage in {
-        None,
-        "profile",
-        "voice",
-        "timeline",
-    }:
+    if run_mode == "full" or (
+        run_mode == "from" and target_stage in {"profile", "voice", "timeline"}
+    ):
         while True:
             stage_banner(4, total, "Timeline Alignment")
             timeline_path = run_stage3(
@@ -824,7 +921,10 @@ def main() -> None:
                     Path(config["profile"]) if config.get("profile") else None
                 )
                 stage_banner(3, total, "Voice Generation")
-                paragraph_indices, volume_gain = ask_voice_generation_scope(config)
+                paragraph_indices, volume_gain = ask_voice_generation_scope(
+                    config,
+                    prompt_if_missing=run_mode != "full",
+                )
                 manifest_path = run_stage2_voice(
                     config,
                     ensure_spoken_json_path(config, stage1_result),

@@ -38,12 +38,20 @@ The recommended way to run NarrateFlow is through the interactive pipeline entry
 python run_pipeline.py
 ```
 
-The pipeline will:
+The pipeline now supports three execution modes:
 
-1. ask for missing inputs interactively
-2. run the stages in order
-3. pause after reviewable stages
-4. allow paragraph-level regeneration during voice review
+1. `full`: run the complete pipeline from Stage 1 to Stage 5
+2. `only`: run only one stage
+3. `from`: start from a stage and continue forward
+
+The CLI asks only for the inputs needed by the selected mode and stage.
+
+If a cover image should be shown before the main video starts, the interactive runner can now ask for:
+
+- whether to enable a cover intro
+- `cover image path`
+- `cover paragraph index`
+- optional cover duration override
 
 ## Example Interactive Flow
 
@@ -52,9 +60,15 @@ Below is a simplified example of what an interactive run looks like.
 ### Input Collection
 
 ```text
-PPT path: D:\work\example.pptx
+Run mode
+- full: run the full pipeline
+- only: run only one stage
+- from: start from one stage and continue
+Choice (full/only/from) [full]: full
+
+PPT path: <path/to/example.pptx>
 Page number: 5
-Target video path: D:\work\example.mp4
+Target video path: <path/to/example.mp4>
 
 Title mode
 - first: treat the first paragraph as title
@@ -63,9 +77,14 @@ Title mode
 Choice (first/none/manual) [first]: first
 
 Do you already have a voice profile file (y/n) [y]: y
-Voice profile path (.pt file or profile directory): D:\qwen3-tts\outputs\voice_profiles\reference_voice
+Voice profile path (.pt file or profile directory): outputs/voice_profiles/reference_voice
 
 Initial probe times (comma separated, keyframe times) [0,10,20,30]: 0,10,20,30
+
+Do you want to prepend a cover image before the main video (y/n) [n]: y
+Cover image path: <path/to/cover.png>
+Cover paragraph index [2]: 2
+Optional cover duration in seconds (empty means use cover paragraph audio duration):
 ```
 
 ### Stage 1. Text Processing
@@ -76,6 +95,7 @@ Check:
 - paragraph extraction
 - title handling
 - spoken narration wording
+- whether header/footer-like short text has been filtered as expected
 
 Edit if needed:
 - `page_XX.spoken.json -> paragraphs[].spoken_text`
@@ -83,8 +103,8 @@ Edit if needed:
 ```text
 [1/5] Text Processing
 Stage 1 completed.
-extracted_json: D:\...\page_05.extracted.json
-spoken_json:    D:\...\page_05.spoken.json
+extracted_json: outputs/scripts/<page_name>/page_05.extracted.json
+spoken_json:    outputs/scripts/<page_name>/page_05.spoken.json
 
 Stage 1 review action
 - c: continue to the next stage
@@ -98,7 +118,7 @@ Choice (c/s) [c]: c
 
 ```text
 [2/5] Voice Profile Generation (skipped, using existing profile)
-profile_path: D:\...\reference_voice.pt
+profile_path: outputs/voice_profiles/reference_voice/reference_voice.pt
 ```
 
 ### Stage 3. Voice Generation
@@ -110,15 +130,31 @@ Check:
 - omitted or weakly spoken words
 - sentence endings
 
+The pipeline now supports generating all narration paragraphs or only selected paragraphs.
+
+For selected paragraphs, you can also apply an optional volume gain.
+
+Examples:
+- empty input: generate all paragraphs
+- `3`: generate paragraph 3 only
+- `3,5,7`: generate selected paragraphs
+
+Equivalent CLI options:
+- `--paragraphs 3,5,7`
+- `--volume-gain 1.1`
+
 Edit or regenerate if needed:
 - edit `page_XX.spoken.json -> paragraphs[].spoken_text` if wording is wrong
 - regenerate by paragraph index if wording is correct but audio sounds bad
 
 ```text
 [3/5] Voice Generation
+Paragraph indices to generate (comma separated, empty means all): 4,7
+Optional volume gain for this regeneration (e.g. 0.9, 1.1, default empty): 1.1
+
 Stage 3 completed.
-manifest: D:\...\segments_manifest.json
-segments_dir: D:\...\segments
+manifest: outputs/<voice_name>/<page_name>/segments_manifest.json
+segments_dir: outputs/<voice_name>/<page_name>/segments
 Available paragraphs:
 2, 3, 4, 5, 6, 7
 
@@ -139,6 +175,9 @@ Check:
 - missing paragraphs
 - ordering issues
 
+If a cover intro is enabled, the cover paragraph does not need a body timeline start.
+For example, when `cover_paragraph_index=2`, paragraph 2 is treated as the intro segment and the body timeline starts from paragraph 3.
+
 Edit if needed:
 - `page_XX.timeline.final.json -> segments[].start`
 - for missing paragraphs, set `matched=true` and provide `start`
@@ -146,7 +185,7 @@ Edit if needed:
 ```text
 [4/5] Timeline Alignment
 Stage 4 completed.
-timeline: D:\...\page_05.timeline.final.json
+timeline: outputs/scripts/<page_name>/page_05.timeline.final.json
 status: complete
 missing: []
 
@@ -165,6 +204,11 @@ Check:
 - retiming quality
 - audio-video alignment
 
+If a cover intro is enabled, Stage 5 will:
+- prepend the cover image as a static intro clip
+- use the selected cover paragraph audio at the beginning
+- shift the main video body after the intro duration
+
 If something is wrong:
 - go back to Stage 3 for audio issues
 - go back to Stage 4 for timing issues
@@ -172,13 +216,18 @@ If something is wrong:
 ```text
 [5/5] Video Composition
 Stage 5 completed.
-final_video: D:\...\page_composed.mp4
-output_dir:   D:\...\outputs\composed\page_xx
+final_video: outputs/composed/<page_name>/page_composed.mp4
+output_dir:   outputs/composed/<page_name>
 ```
 
 ## Current Behavior
 
 - paragraph-level audio generation
+- optional paragraph selection and volume gain during Stage 3 voice generation
+- profile path accepts either a `.pt` file or a profile directory containing `<dirname>.pt`
+- text extraction filters some short header/footer-like slide text blocks based on layout position
+- optional cover intro support with `cover_image` and `cover_paragraph_index`
+- when a cover intro is enabled, the cover paragraph is excluded from body timeline alignment and the body starts from the next paragraph
 - start-driven timeline semantics
 - local video retiming instead of truncating audio
 - current composition defaults:
@@ -192,11 +241,19 @@ output_dir:   D:\...\outputs\composed\page_xx
 - timeline alignment quality depends on UI visibility, subtitle availability, and visual distinction between adjacent segments
 - human review is still recommended for production-quality output
 - some sentence endings may require spoken-text rewriting for better TTS delivery
+- the current workflow is page-oriented rather than a full-deck production pipeline
+
+## Project Structure
+
+- `outputs/voice_profiles/`: saved voice profiles `.pt`
+- `outputs/<voice_name>/<title>/`: generated voice artifacts for a page
+- `outputs/scripts/`: extracted text, spoken text, and timeline files
+- `pipeline/`: reusable page-level workflow scripts and older tooling
+- `sample/`: reference examples or experiments
 
 ## Roadmap
 
-- support more document input formats
-- improve keyframe selection and OCR-assisted timeline alignment
-- improve adjacent-paragraph conflict resolution in timeline generation
-- add paragraph-level ASR review and regeneration workflow
-- refine the interactive pipeline experience
+- continue refining timeline alignment quality and probe strategy
+- keep simplifying `run_pipeline.py` interaction without making the workflow more rigid
+- improve README examples with more realistic sample commands and outputs
+- add better review and recovery tools for paragraph-level regeneration and timeline fixing

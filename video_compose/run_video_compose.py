@@ -28,6 +28,28 @@ def get_video_duration(video_path: Path) -> float:
     return float(result.stdout.strip())
 
 
+def get_video_resolution(video_path: Path) -> tuple[int, int]:
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height",
+            "-of",
+            "csv=p=0:s=x",
+            str(video_path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    width_text, height_text = result.stdout.strip().split("x", 1)
+    return int(width_text), int(height_text)
+
+
 def load_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -262,6 +284,127 @@ def mux_video(video_path: Path, audio_path: Path, output_path: Path) -> None:
     )
 
 
+def build_cover_video(
+    cover_image: Path,
+    duration_sec: float,
+    output_video: Path,
+    width: int,
+    height: int,
+) -> None:
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-loop",
+            "1",
+            "-i",
+            str(cover_image),
+            "-t",
+            f"{duration_sec}",
+            "-vf",
+            f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black,fps=30,format=yuv420p",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:v",
+            "libx264",
+            str(output_video),
+        ],
+        check=True,
+    )
+
+
+def prepend_cover_to_video(
+    video_path: Path,
+    cover_image: Path,
+    cover_duration_sec: float,
+    output_video: Path,
+    work_dir: Path,
+    width: int,
+    height: int,
+) -> Path:
+    work_dir.mkdir(parents=True, exist_ok=True)
+    cover_video = work_dir / "cover_intro.mp4"
+    concat_list = work_dir / "video_concat.txt"
+    build_cover_video(cover_image, cover_duration_sec, cover_video, width, height)
+    concat_list.write_text(
+        f"file '{cover_video.resolve().as_posix()}'\nfile '{video_path.resolve().as_posix()}'\n",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(concat_list),
+            "-c",
+            "copy",
+            str(output_video),
+        ],
+        check=True,
+    )
+    return output_video
+
+
+def infer_cover_duration_sec(
+    manifest: dict,
+    requested_duration_sec: float | None = None,
+    paragraph_index: int = 2,
+) -> float:
+    if requested_duration_sec is not None:
+        return float(requested_duration_sec)
+    segments = manifest.get("segments", [])
+    if not segments:
+        raise ValueError("Cannot infer cover duration without manifest segments.")
+    for item in segments:
+        if int(item["paragraph_index"]) == paragraph_index:
+            return float(item["duration"])
+    raise ValueError(
+        f"Cannot infer cover duration: paragraph_index={paragraph_index} not found in manifest."
+    )
+
+
+def build_cover_audio_prefix(
+    manifest: dict,
+    paragraph_index: int,
+    sample_rate: int,
+    cover_duration_sec: float,
+) -> tuple[np.ndarray, dict]:
+    segments = manifest.get("segments", [])
+    cover_segment = next(
+        (item for item in segments if int(item["paragraph_index"]) == paragraph_index),
+        None,
+    )
+    if cover_segment is None:
+        raise ValueError(
+            f"Cover paragraph_index={paragraph_index} not found in manifest."
+        )
+    wav, sr = sf.read(cover_segment["wav_path"], dtype="float32")
+    if int(sr) != sample_rate:
+        raise RuntimeError("cover segment sample rate mismatch")
+    wav = np.asarray(wav, dtype=np.float32)
+    total_samples = int(round(float(cover_duration_sec) * sample_rate))
+    if total_samples < len(wav):
+        raise ValueError(
+            "cover duration is shorter than the selected cover paragraph audio."
+        )
+    prefix = np.zeros(max(total_samples, len(wav)), dtype=np.float32)
+    prefix[: len(wav)] += wav
+    placement = {
+        "paragraph_index": int(paragraph_index),
+        "placed_start": 0.0,
+        "placed_end": round(float(len(wav) / sample_rate), 3),
+        "cover_duration_sec": round(float(cover_duration_sec), 3),
+        "audio_duration": round(float(len(wav) / sample_rate), 3),
+        "segment_wav": cover_segment["wav_path"],
+        "is_cover_intro": True,
+    }
+    return prefix, placement
+
+
 def run_video_compose(
     video: Path,
     timeline: Path,
@@ -270,11 +413,15 @@ def run_video_compose(
     buffer_sec: float = 1.2,
     tail_buffer_sec: float = 1.5,
     audio_tail_pad_sec: float = 0.5,
+    cover_image: Path | None = None,
+    cover_duration_sec: float | None = None,
+    cover_paragraph_index: int = 2,
 ) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     video_duration = get_video_duration(video)
     manifest = load_json(segments_manifest)
     sample_rate = int(manifest["sample_rate"])
+    video_width, video_height = get_video_resolution(video)
 
     segments = build_retime_segments(
         timeline,
@@ -286,10 +433,45 @@ def run_video_compose(
     audio_track, placements = build_retime_track(
         segments, sample_rate, audio_tail_pad_sec=audio_tail_pad_sec
     )
-    sf.write(output_dir / "page_audio.wav", audio_track, sample_rate)
     render_retimed_video(video, segments, output_dir / "page_retimed_video.mp4")
+    final_video_input = output_dir / "page_retimed_video.mp4"
+    applied_cover_duration = None
+    if cover_image is not None:
+        applied_cover_duration = infer_cover_duration_sec(
+            manifest,
+            requested_duration_sec=cover_duration_sec,
+            paragraph_index=cover_paragraph_index,
+        )
+        final_video_input = prepend_cover_to_video(
+            video_path=final_video_input,
+            cover_image=cover_image,
+            cover_duration_sec=applied_cover_duration,
+            output_video=output_dir / "page_retimed_video_with_cover.mp4",
+            work_dir=output_dir / "cover_tmp",
+            width=video_width,
+            height=video_height,
+        )
+        cover_prefix, cover_placement = build_cover_audio_prefix(
+            manifest=manifest,
+            paragraph_index=cover_paragraph_index,
+            sample_rate=sample_rate,
+            cover_duration_sec=applied_cover_duration,
+        )
+        audio_track = np.concatenate([cover_prefix, audio_track]).astype(np.float32)
+        shifted_placements = []
+        for item in placements:
+            shifted = dict(item)
+            shifted["placed_start"] = round(
+                float(item["placed_start"]) + applied_cover_duration, 3
+            )
+            shifted["placed_end"] = round(
+                float(item["placed_end"]) + applied_cover_duration, 3
+            )
+            shifted_placements.append(shifted)
+        placements = [cover_placement] + shifted_placements
+    sf.write(output_dir / "page_audio.wav", audio_track, sample_rate)
     mux_video(
-        output_dir / "page_retimed_video.mp4",
+        final_video_input,
         output_dir / "page_audio.wav",
         output_dir / "page_composed.mp4",
     )
@@ -301,6 +483,9 @@ def run_video_compose(
         "buffer_sec": buffer_sec,
         "tail_buffer_sec": tail_buffer_sec,
         "audio_tail_pad_sec": audio_tail_pad_sec,
+        "cover_image": str(cover_image) if cover_image else None,
+        "cover_duration_sec": applied_cover_duration,
+        "cover_paragraph_index": cover_paragraph_index if cover_image else None,
         "segments": segments,
         "placements": placements,
     }
@@ -320,6 +505,9 @@ def main() -> None:
     parser.add_argument("--buffer-sec", type=float, default=1.2)
     parser.add_argument("--tail-buffer-sec", type=float, default=1.5)
     parser.add_argument("--audio-tail-pad-sec", type=float, default=0.5)
+    parser.add_argument("--cover-image", default=None)
+    parser.add_argument("--cover-duration-sec", type=float, default=None)
+    parser.add_argument("--cover-paragraph-index", type=int, default=2)
     args = parser.parse_args()
 
     output = run_video_compose(
@@ -330,6 +518,9 @@ def main() -> None:
         buffer_sec=args.buffer_sec,
         tail_buffer_sec=args.tail_buffer_sec,
         audio_tail_pad_sec=args.audio_tail_pad_sec,
+        cover_image=Path(args.cover_image) if args.cover_image else None,
+        cover_duration_sec=args.cover_duration_sec,
+        cover_paragraph_index=args.cover_paragraph_index,
     )
     print(output)
 
