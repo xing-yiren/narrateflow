@@ -164,14 +164,224 @@ def needs_profile_creation_inputs(
     return False
 
 
+def get_project_dir(value: str | None) -> Path | None:
+    return Path(value) if value else None
+
+
+def task_file_path(project_dir: Path | None) -> Path | None:
+    if project_dir is None:
+        return None
+    return project_dir / "task.json"
+
+
+def load_task_record(project_dir: Path | None) -> dict[str, Any]:
+    task_path = task_file_path(project_dir)
+    if task_path is None or not task_path.exists():
+        return {"inputs": {}, "artifacts": {}, "meta": {}}
+    try:
+        payload = json.loads(task_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"inputs": {}, "artifacts": {}, "meta": {}}
+    payload.setdefault("inputs", {})
+    payload.setdefault("artifacts", {})
+    payload.setdefault("meta", {})
+    return payload
+
+
+def resolve_task_path(project_dir: Path | None, value: str | None) -> str | None:
+    if not value:
+        return None
+    path = Path(value)
+    if path.is_absolute() or project_dir is None:
+        return str(path)
+    return str((project_dir / path).resolve())
+
+
+def task_relativize(project_dir: Path | None, value: str | None) -> str | None:
+    if not value:
+        return None
+    path = Path(value)
+    if project_dir is None:
+        return str(path)
+    try:
+        return str(path.resolve().relative_to(project_dir.resolve()))
+    except Exception:
+        return str(path)
+
+
+def write_task_record(project_dir: Path | None, payload: dict[str, Any]) -> None:
+    task_path = task_file_path(project_dir)
+    if task_path is None:
+        return
+    task_path.parent.mkdir(parents=True, exist_ok=True)
+    write_json(task_path, payload)
+
+
+def update_task_record(
+    project_dir: Path | None,
+    *,
+    input_updates: dict[str, str | int | None] | None = None,
+    artifact_updates: dict[str, str | int | None] | None = None,
+    meta_updates: dict[str, Any] | None = None,
+) -> None:
+    if project_dir is None:
+        return
+    payload = load_task_record(project_dir)
+    if input_updates:
+        for key, value in input_updates.items():
+            if value is None:
+                payload["inputs"].pop(key, None)
+            elif isinstance(value, str):
+                payload["inputs"][key] = task_relativize(project_dir, value)
+            else:
+                payload["inputs"][key] = value
+    if artifact_updates:
+        for key, value in artifact_updates.items():
+            if value is None:
+                payload["artifacts"].pop(key, None)
+            elif isinstance(value, str):
+                payload["artifacts"][key] = task_relativize(project_dir, value)
+            else:
+                payload["artifacts"][key] = value
+    if meta_updates:
+        payload["meta"].update(meta_updates)
+    write_task_record(project_dir, payload)
+
+
+def project_subdir(project_dir: Path | None, name: str) -> Path | None:
+    if project_dir is None:
+        return None
+    return project_dir / name
+
+
+def first_existing(paths: list[Path]) -> str | None:
+    for path in paths:
+        if path.exists():
+            return str(path)
+    return None
+
+
+def infer_project_stage_path(
+    project_dir: Path | None, stage: str, page: int | None, suffix: str
+) -> str | None:
+    if project_dir is None:
+        return None
+    stage_dir = project_subdir(project_dir, stage)
+    if stage_dir is None:
+        return None
+    if page is not None:
+        candidate = stage_dir / f"page_{int(page):02d}.{suffix}"
+        if candidate.exists():
+            return str(candidate)
+    matches = sorted(stage_dir.glob(f"*.{suffix}"))
+    if len(matches) == 1:
+        return str(matches[0])
+    return None
+
+
+def infer_project_source_path(project_dir: Path | None, stem: str, exts: tuple[str, ...]) -> str | None:
+    if project_dir is None:
+        return None
+    source_dir = project_subdir(project_dir, "source")
+    if source_dir is None:
+        return None
+    for ext in exts:
+        candidate = source_dir / f"{stem}{ext}"
+        if candidate.exists():
+            return str(candidate)
+    matches = []
+    for ext in exts:
+        matches.extend(source_dir.glob(f"*{ext}"))
+    unique = sorted({path.resolve() for path in matches})
+    if len(unique) == 1:
+        return str(unique[0])
+    return None
+
+
+def infer_project_profile_path(project_dir: Path | None) -> str | None:
+    if project_dir is None:
+        return None
+    profile_dir = project_subdir(project_dir, "profile")
+    source_dir = project_subdir(project_dir, "source")
+    candidates: list[Path] = []
+    if profile_dir and profile_dir.exists():
+        candidates.extend(profile_dir.glob("**/*.pt"))
+    if source_dir and source_dir.exists():
+        candidates.extend(source_dir.glob("profile*.pt"))
+    unique = sorted({path.resolve() for path in candidates})
+    if len(unique) == 1:
+        return str(unique[0])
+    return None
+
+
+def apply_project_dir_inference(
+    args: argparse.Namespace, run_mode: str, target_stage: str | None
+) -> None:
+    project_dir = get_project_dir(getattr(args, "project_dir", None))
+    if project_dir is None:
+        return
+    task = load_task_record(project_dir)
+    task_inputs = task.get("inputs", {})
+    task_artifacts = task.get("artifacts", {})
+    task_meta = task.get("meta", {})
+    page = getattr(args, "page", None)
+    if page is None:
+        page = task_meta.get("page")
+        args.page = page
+
+    args.stage1_output_dir = args.stage1_output_dir or str(project_dir / "text")
+    args.profile_output_dir = args.profile_output_dir or str(project_dir / "profile")
+    args.voice_output_dir = args.voice_output_dir or str(project_dir / "voice")
+    args.compose_output_dir = args.compose_output_dir or str(project_dir / "compose")
+
+    args.ppt = args.ppt or resolve_task_path(project_dir, task_inputs.get("document")) or infer_project_source_path(project_dir, "input", (".pptx", ".txt"))
+    args.video = args.video or resolve_task_path(project_dir, task_inputs.get("video")) or infer_project_source_path(project_dir, "video", (".mp4", ".mov", ".mkv", ".avi"))
+    args.profile = args.profile or resolve_task_path(project_dir, task_inputs.get("profile")) or infer_project_profile_path(project_dir)
+    args.cover_image = args.cover_image or resolve_task_path(project_dir, task_inputs.get("cover_image")) or infer_project_source_path(project_dir, "cover", (".png", ".jpg", ".jpeg", ".webp"))
+    args.outro_image = args.outro_image or resolve_task_path(project_dir, task_inputs.get("outro_image")) or infer_project_source_path(project_dir, "outro", (".png", ".jpg", ".jpeg", ".webp"))
+    args.outro_audio = args.outro_audio or resolve_task_path(project_dir, task_inputs.get("outro_audio")) or infer_project_source_path(project_dir, "outro_audio", (".wav", ".mp3", ".m4a"))
+    args.outro_text = args.outro_text or task_inputs.get("outro_text")
+    args.outro_profile = args.outro_profile or resolve_task_path(project_dir, task_inputs.get("outro_profile"))
+    args.spoken_json = args.spoken_json or resolve_task_path(project_dir, task_artifacts.get("spoken_json")) or infer_project_stage_path(project_dir, "text", page, "spoken.json")
+    args.timeline = args.timeline or resolve_task_path(project_dir, task_artifacts.get("timeline")) or infer_project_stage_path(project_dir, "timeline", page, "timeline.final.json")
+    args.segments_manifest = args.segments_manifest or resolve_task_path(project_dir, task_artifacts.get("segments_manifest")) or first_existing([project_dir / "voice" / "segments_manifest.json"])
+
+
 def is_text_file_input(path_text: str | None) -> bool:
     return bool(path_text) and Path(str(path_text)).suffix.lower() == ".txt"
+
+
+def persist_task_inputs(config: dict[str, Any]) -> None:
+    project_dir = get_project_dir(config.get("project_dir"))
+    if project_dir is None:
+        return
+    project_dir.mkdir(parents=True, exist_ok=True)
+    source_type = "text" if is_text_file_input(config.get("ppt")) else "ppt"
+    update_task_record(
+        project_dir,
+        input_updates={
+            "document": config.get("ppt"),
+            "video": config.get("video"),
+            "profile": config.get("profile"),
+            "cover_image": config.get("cover_image"),
+            "outro_image": config.get("outro_image"),
+            "outro_audio": config.get("outro_audio"),
+            "outro_text": config.get("outro_text"),
+            "outro_profile": config.get("outro_profile"),
+        },
+        meta_updates={
+            "page": config.get("page"),
+            "source_type": source_type,
+        },
+    )
 
 
 def resolve_initial_args(args: argparse.Namespace) -> dict[str, Any]:
     config: dict[str, Any] = {}
     run_mode = args.run_mode
     target_stage = args.target_stage
+    apply_project_dir_inference(args, run_mode, target_stage)
+    project_dir = get_project_dir(getattr(args, "project_dir", None))
 
     config["ppt"] = None
     config["page"] = args.page
@@ -182,6 +392,7 @@ def resolve_initial_args(args: argparse.Namespace) -> dict[str, Any]:
     config["timeline"] = None
     config["segments_manifest"] = None
     config["outro_profile"] = None
+    config["project_dir"] = str(project_dir) if project_dir else None
 
     if needs_text_inputs(run_mode, target_stage):
         config["ppt"] = (
@@ -410,6 +621,8 @@ def summarize_initial_inputs(
     config: dict[str, Any], run_mode: str, target_stage: str | None
 ) -> list[str]:
     lines = [f"run_mode: {run_mode}"]
+    if config.get("project_dir"):
+        lines.append(f"project_dir: {config.get('project_dir')}")
     if target_stage is not None:
         lines.append(f"target_stage: {target_stage}")
 
@@ -837,6 +1050,9 @@ def show_stage4_summary(output_video: Path, output_dir: Path) -> None:
 def default_stage1_output_dir(config: dict[str, Any]) -> Path | None:
     if config.get("stage1_output_dir"):
         return Path(config["stage1_output_dir"])
+    project_dir = get_project_dir(config.get("project_dir"))
+    if project_dir is not None:
+        return project_dir / "text"
     return None
 
 
@@ -844,6 +1060,9 @@ def default_timeline_output(spoken_json: Path, config: dict[str, Any]) -> Path:
     if config.get("timeline_output"):
         return Path(config["timeline_output"])
     page = int(config.get("page") or infer_page_from_spoken_json(spoken_json))
+    project_dir = get_project_dir(config.get("project_dir"))
+    if project_dir is not None:
+        return project_dir / "timeline" / f"page_{page:02d}.timeline.final.json"
     return spoken_json.parent / f"page_{page:02d}.timeline.final.json"
 
 
@@ -853,28 +1072,42 @@ def default_timeline_debug_dir(
     if config.get("timeline_debug_dir"):
         return Path(config["timeline_debug_dir"])
     page = int(config.get("page") or infer_page_from_spoken_json(spoken_json))
+    project_dir = get_project_dir(config.get("project_dir"))
+    if project_dir is not None:
+        return project_dir / "timeline" / "debug" / f"page_{page:02d}_debug"
     return OUTPUTS_DIR / "timeline_debug" / f"page_{page:02d}_debug"
 
 
 def default_compose_output_dir(source_path: Path, config: dict[str, Any]) -> Path:
     if config.get("compose_output_dir"):
         return Path(config["compose_output_dir"])
+    project_dir = get_project_dir(config.get("project_dir"))
+    if project_dir is not None:
+        return project_dir / "compose"
     page_token = source_path.stem.replace(".timeline", "")
     page_name = f"{slugify(page_token, max_len=36)}_{slugify(Path(config['video']).stem, max_len=36)}"
     return OUTPUTS_DIR / "composed" / page_name
 
 
 def run_stage1(config: dict[str, Any]) -> dict[str, Any]:
-    return prepare_ppt_page(
+    result = prepare_ppt_page(
         ppt_path=Path(config["ppt"]),
         page=int(config["page"]),
         title_indices=config["title_indices"],
         output_dir=default_stage1_output_dir(config),
     )
+    update_task_record(
+        get_project_dir(config.get("project_dir")),
+        artifact_updates={
+            "extracted_json": str(result["extracted_path"]),
+            "spoken_json": str(result["spoken_path"]),
+        },
+    )
+    return result
 
 
 def run_stage2_profile(config: dict[str, Any]) -> Path:
-    return run_voice_profile(
+    profile_path = run_voice_profile(
         voice_name=config["voice_name"],
         ref_audio=config["ref_audio"],
         ref_text=config["ref_text"],
@@ -882,6 +1115,12 @@ def run_stage2_profile(config: dict[str, Any]) -> Path:
         if config.get("profile_output_dir")
         else None,
     )
+    update_task_record(
+        get_project_dir(config.get("project_dir")),
+        input_updates={"profile": str(profile_path)},
+        artifact_updates={"profile": str(profile_path)},
+    )
+    return profile_path
 
 
 def run_stage2_voice(
@@ -901,7 +1140,12 @@ def run_stage2_voice(
             if config.get("voice_output_dir")
             else None,
         )
-        return Path(result["manifest_path"])
+        manifest_path = Path(result["manifest_path"])
+        update_task_record(
+            get_project_dir(config.get("project_dir")),
+            artifact_updates={"segments_manifest": str(manifest_path)},
+        )
+        return manifest_path
 
     manifest_path: Path | None = None
     for paragraph_index in paragraph_indices:
@@ -918,6 +1162,10 @@ def run_stage2_voice(
         manifest_path = Path(result["manifest_path"])
     if manifest_path is None:
         raise ValueError("No valid paragraph indices provided for generation.")
+    update_task_record(
+        get_project_dir(config.get("project_dir")),
+        artifact_updates={"segments_manifest": str(manifest_path)},
+    )
     return manifest_path
 
 
@@ -960,6 +1208,10 @@ def run_stage3(config: dict[str, Any], spoken_json: Path) -> Path:
             if config.get("cover_image")
             else None
         ),
+    )
+    update_task_record(
+        get_project_dir(config.get("project_dir")),
+        artifact_updates={"timeline": str(output)},
     )
     return output
 
@@ -1022,7 +1274,7 @@ def run_stage4(
 ) -> Path:
     output_dir = default_compose_output_dir(timeline_path, config)
     outro_audio = generate_outro_audio(config, output_dir)
-    return run_video_compose(
+    final_video = run_video_compose(
         video=Path(config["video"]),
         timeline=timeline_path,
         segments_manifest=manifest_path,
@@ -1033,10 +1285,16 @@ def run_stage4(
         outro_image=Path(config["outro_image"]) if config.get("outro_image") else None,
         outro_audio=outro_audio,
     )
+    update_task_record(
+        get_project_dir(config.get("project_dir")),
+        artifact_updates={"final_video": str(final_video)},
+    )
+    return final_video
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Interactive NarrateFlow pipeline")
+    parser.add_argument("--project-dir")
     parser.add_argument("--ppt")
     parser.add_argument("--input", dest="ppt")
     parser.add_argument("--page", type=int)
@@ -1091,6 +1349,7 @@ def main() -> None:
         sync_config_to_args(args, config)
         input_action = confirm_initial_inputs(config, run_mode, target_stage)
         if input_action == "c":
+            persist_task_inputs(config)
             break
         if input_action == "s":
             return

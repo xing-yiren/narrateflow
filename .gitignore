@@ -64,3 +64,19 @@ inputs/
 
 # Notebook
 .ipynb_checkpoints/
+
+# Claude Code local state
+.claude/
+
+# Local backup directories
+backup/
+
+# Local model directories
+models/
+
+# Local wheel / installer cache
+wheels/
+*.whl
+
+# Local experiment result files
+result*.txt

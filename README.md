@@ -46,6 +46,22 @@ The pipeline now supports three execution modes:
 
 The CLI asks only for the inputs needed by the selected mode and stage.
 
+If you want one task to live under a single folder, you can also provide a project directory:
+
+- `--project-dir <path/to/job_dir>`
+
+When a project directory is provided, NarrateFlow will:
+
+- keep a lightweight `task.json` under that directory to remember the latest inputs and main artifacts
+- place Stage 1 outputs under `text/`
+- place Stage 2 profile outputs under `profile/`
+- place Stage 3 audio outputs under `voice/`
+- place Stage 4 outputs under `timeline/`
+- place Stage 5 outputs under `compose/`
+- reuse recorded paths and known artifacts for later `only/from` runs
+
+This makes it easier to rerun later stages by pointing the pipeline to the same task folder.
+
 Stage 1 now supports both `.pptx` and `.txt` inputs. For plain text input:
 
 - use a `.txt` file as the document source
@@ -110,6 +126,12 @@ For a plain text script, you can also start directly with:
 
 ```bash
 python run_pipeline.py --only-stage text --input "<path/to/script.txt>"
+```
+
+Or start a task under one folder:
+
+```bash
+python run_pipeline.py --project-dir "<path/to/job_dir>"
 ```
 
 ### Stage 1. Text Processing
