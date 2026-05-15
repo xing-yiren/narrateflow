@@ -10,3 +10,4 @@ requests
 opencv-python
 numpy
 gradio
+google-genai

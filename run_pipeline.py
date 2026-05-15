@@ -6,14 +6,9 @@ import os
 from pathlib import Path
 from typing import Any
 
-import soundfile as sf
-
 from text_process.run_text_process import prepare_ppt_page, slugify
-from voice_process.common import load_model, load_prompt_file, synthesize_segment_wavs, write_json
-from voice_process.run_voice_profile import run_voice_profile
-from voice_process.run_voice_generate import run_voice_generate
 from timeline_align.run_timeline_align import run_timeline_align
-from video_compose.run_video_compose import run_video_compose
+from pipeline.stages import add_understand_arguments, run_stage_understand, run_stage_video_script
 
 
 ROOT = Path(__file__).resolve().parent
@@ -25,14 +20,21 @@ STAGE_ALIASES = {
     "4": "timeline",
     "5": "compose",
     "text": "text",
+    "script": "script",
+    "understand": "understand",
     "profile": "profile",
     "voice": "voice",
     "timeline": "timeline",
     "compose": "compose",
 }
 
-STAGE_SELECTION_CHOICES = ["text", "profile", "voice", "timeline", "compose"]
+STAGE_SELECTION_CHOICES = ["text", "understand", "script", "profile", "voice", "timeline", "compose"]
 RUN_MODE_CHOICES = ["full", "only", "from"]
+
+
+def write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def prompt_text(label: str, default: str | None = None, required: bool = True) -> str:
@@ -64,7 +66,9 @@ def prompt_existing_path(
         print(f"Path does not exist or is not a valid {expected}: {path}")
 
 
-def prompt_choice(label: str, choices: list[str], default: str | None = None) -> str:
+def prompt_choice(label: str, choices: list[str], default: str | None = None, assume_default: bool = False) -> str:
+    if assume_default and default is not None:
+        return default
     display = "/".join(choices)
     suffix = f" [{default}]" if default else ""
     while True:
@@ -133,8 +137,8 @@ def needs_text_inputs(run_mode: str, target_stage: str | None) -> bool:
 def needs_video_input(run_mode: str, target_stage: str | None) -> bool:
     if run_mode == "full":
         return True
-    return target_stage in {"timeline", "compose"} or (
-        run_mode == "from" and target_stage in {"profile", "voice"}
+    return target_stage in {"understand", "timeline", "compose"} or (
+        run_mode == "from" and target_stage in {"profile", "voice", "understand"}
     )
 
 
@@ -338,6 +342,7 @@ def apply_project_dir_inference(
     args.video = args.video or resolve_task_path(project_dir, task_inputs.get("video")) or infer_project_source_path(project_dir, "video", (".mp4", ".mov", ".mkv", ".avi"))
     args.profile = args.profile or resolve_task_path(project_dir, task_inputs.get("profile")) or infer_project_profile_path(project_dir)
     args.cover_image = args.cover_image or resolve_task_path(project_dir, task_inputs.get("cover_image")) or infer_project_source_path(project_dir, "cover", (".png", ".jpg", ".jpeg", ".webp"))
+    args.reference_document = getattr(args, "reference_document", None) or resolve_task_path(project_dir, task_inputs.get("reference_document")) or infer_project_source_path(project_dir, "reference", (".txt", ".md"))
     args.outro_image = args.outro_image or resolve_task_path(project_dir, task_inputs.get("outro_image")) or infer_project_source_path(project_dir, "outro", (".png", ".jpg", ".jpeg", ".webp"))
     args.outro_audio = args.outro_audio or resolve_task_path(project_dir, task_inputs.get("outro_audio")) or infer_project_source_path(project_dir, "outro_audio", (".wav", ".mp3", ".m4a"))
     args.outro_text = args.outro_text or task_inputs.get("outro_text")
@@ -368,6 +373,7 @@ def persist_task_inputs(config: dict[str, Any]) -> None:
             "outro_audio": config.get("outro_audio"),
             "outro_text": config.get("outro_text"),
             "outro_profile": config.get("outro_profile"),
+            "reference_document": config.get("reference_document"),
         },
         meta_updates={
             "page": config.get("page"),
@@ -393,6 +399,20 @@ def resolve_initial_args(args: argparse.Namespace) -> dict[str, Any]:
     config["segments_manifest"] = None
     config["outro_profile"] = None
     config["project_dir"] = str(project_dir) if project_dir else None
+    config["yes"] = bool(getattr(args, "yes", False))
+    config["reference_document"] = getattr(args, "reference_document", None)
+    config["gemini_api_key"] = getattr(args, "gemini_api_key", None) or read_env_key("GEMINI_API_KEY")
+    config["gemini_model"] = getattr(args, "gemini_model", "gemini-2.5-flash")
+    config["frame_stride"] = getattr(args, "frame_stride", None)
+    config["min_gap_sec"] = getattr(args, "min_gap_sec", None)
+    config["global_threshold"] = getattr(args, "global_threshold", None)
+    config["subtitle_threshold"] = getattr(args, "subtitle_threshold", None)
+    config["detection_max_width"] = getattr(args, "detection_max_width", None)
+    config["fill_gap_sec"] = getattr(args, "fill_gap_sec", None)
+    config["understand_batch_size"] = getattr(args, "understand_batch_size", 3)
+    config["understanding_output_dir"] = getattr(args, "understanding_output_dir", None)
+    config["video_understanding"] = getattr(args, "video_understanding", None)
+    config["use_gemini_script"] = not bool(getattr(args, "no_gemini_script", False))
 
     if needs_text_inputs(run_mode, target_stage):
         config["ppt"] = (
@@ -517,6 +537,7 @@ def resolve_initial_args(args: argparse.Namespace) -> dict[str, Any]:
             "Do you want to prepend a cover image before the main video",
             ["y", "n"],
             default="n",
+            assume_default=bool(getattr(args, "yes", False)),
         )
         if use_cover == "y":
             cover_image = prompt_existing_path("Cover image path")
@@ -556,6 +577,7 @@ def resolve_initial_args(args: argparse.Namespace) -> dict[str, Any]:
             "Do you already have a fixed outro slogan audio",
             ["y", "n"],
             default="y",
+            assume_default=bool(getattr(args, "yes", False)),
         )
         if has_fixed_outro_audio == "y":
             outro_audio = prompt_existing_path("Outro audio path")
@@ -571,6 +593,7 @@ def resolve_initial_args(args: argparse.Namespace) -> dict[str, Any]:
             "Do you want to append an outro page after the main video",
             ["y", "n"],
             default="n",
+            assume_default=bool(getattr(args, "yes", False)),
         )
         if use_outro == "y":
             outro_image = prompt_existing_path("Outro image path")
@@ -604,12 +627,17 @@ def resolve_initial_args(args: argparse.Namespace) -> dict[str, Any]:
         or target_stage in {"timeline"}
         or (run_mode == "from" and target_stage in {"profile", "voice"})
     ):
-        config["probe_times"] = args.probe_times or prompt_text(
-            "Initial probe times (comma separated, keyframe times)",
-            default="0,10,20,30",
-        )
+        if args.probe_times:
+            config["probe_times"] = args.probe_times
+        elif getattr(args, "yes", False):
+            config["probe_times"] = "0,10,20,30"
+        else:
+            config["probe_times"] = prompt_text(
+                "Initial probe times (comma separated, keyframe times)",
+                default="0,10,20,30",
+            )
         config["api_key"] = args.api_key or read_env_key("MAAS_API_KEY")
-        if not config["api_key"]:
+        if not config["api_key"] and not getattr(args, "yes", False):
             config["api_key"] = prompt_text("MAAS_API_KEY", required=True)
     else:
         config["probe_times"] = args.probe_times
@@ -693,6 +721,8 @@ def summarize_initial_inputs(
 def confirm_initial_inputs(
     config: dict[str, Any], run_mode: str, target_stage: str | None
 ) -> str:
+    if config.get("yes"):
+        return "c"
     print()
     print("Collected inputs:")
     for line in summarize_initial_inputs(config, run_mode, target_stage):
@@ -828,18 +858,18 @@ def resolve_run_plan(args: argparse.Namespace) -> tuple[str, str | None]:
 
     if args.only_stage:
         target_stage = STAGE_ALIASES.get(args.only_stage, args.only_stage)
-        if target_stage in {"text", "profile", "voice", "timeline", "compose"}:
+        if target_stage in {"text", "understand", "script", "profile", "voice", "timeline", "compose"}:
             return "only", target_stage
         raise ValueError(
-            "Unsupported --only-stage value. Use one of: 1/text, 2/profile, 3/voice, 4/timeline, 5/compose"
+            "Unsupported --only-stage value. Use one of: text, understand, profile, voice, timeline, compose"
         )
 
     if args.from_stage:
         target_stage = STAGE_ALIASES.get(args.from_stage, args.from_stage)
-        if target_stage in {"text", "profile", "voice", "timeline", "compose"}:
+        if target_stage in {"text", "understand", "script", "profile", "voice", "timeline", "compose"}:
             return "from", target_stage
         raise ValueError(
-            "Unsupported --from-stage value. Use one of: 1/text, 2/profile, 3/voice, 4/timeline, 5/compose"
+            "Unsupported --from-stage value. Use one of: text, understand, profile, voice, timeline, compose"
         )
 
     run_mode = prompt_choice(
@@ -986,7 +1016,7 @@ def ask_voice_generation_scope(
 ) -> tuple[list[int] | None, float | None]:
     raw = config.get("paragraphs")
     if raw is None:
-        if not prompt_if_missing:
+        if not prompt_if_missing or config.get("yes"):
             return None, None
         raw = prompt_text(
             "Paragraph indices to generate (comma separated, empty means all)",
@@ -1089,6 +1119,42 @@ def default_compose_output_dir(source_path: Path, config: dict[str, Any]) -> Pat
     return OUTPUTS_DIR / "composed" / page_name
 
 
+def run_stage_script_from_understanding(config: dict[str, Any]) -> dict[str, Any]:
+    result = run_stage_video_script(config)
+    update_task_record(
+        get_project_dir(config.get("project_dir")),
+        artifact_updates={"spoken_json": str(result["spoken_path"])},
+    )
+    return result
+
+
+def show_script_summary(result: dict[str, Any]) -> None:
+    spoken = result.get("spoken", {})
+    print(f"spoken_json: {result['spoken_path']}")
+    print(f"paragraph_count: {len(spoken.get('paragraphs', []))}")
+    print(f"segment_count: {len(spoken.get('segments', []))}")
+
+
+def run_stage_understanding(config: dict[str, Any]) -> dict[str, Any]:
+    result = run_stage_understand(config)
+    update_task_record(
+        get_project_dir(config.get("project_dir")),
+        artifact_updates={
+            "video_understanding": str(result["understanding_path"]),
+            "keyframes_json": str(result["keyframes_path"]),
+            "window_manifest": str(result["window_manifest_path"]),
+        },
+    )
+    return result
+
+
+def show_understanding_summary(result: dict[str, Any]) -> None:
+    understanding = result.get("understanding", {})
+    print(f"video_understanding: {result['understanding_path']}")
+    print(f"keyframes: {result['keyframes_path']}")
+    print(f"window_manifest: {result['window_manifest_path']}")
+    print(f"window_count: {understanding.get('window_count', 0)}")
+
 def run_stage1(config: dict[str, Any]) -> dict[str, Any]:
     result = prepare_ppt_page(
         ppt_path=Path(config["ppt"]),
@@ -1107,6 +1173,8 @@ def run_stage1(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def run_stage2_profile(config: dict[str, Any]) -> Path:
+    from voice_process.run_voice_profile import run_voice_profile
+
     profile_path = run_voice_profile(
         voice_name=config["voice_name"],
         ref_audio=config["ref_audio"],
@@ -1130,6 +1198,8 @@ def run_stage2_voice(
     paragraph_indices: list[int] | None = None,
     volume_gain: float | None = None,
 ) -> Path:
+    from voice_process.run_voice_generate import run_voice_generate
+
     if not paragraph_indices:
         result = run_voice_generate(
             spoken_json=spoken_json,
@@ -1232,6 +1302,9 @@ def generate_outro_audio(config: dict[str, Any], output_dir: Path) -> Path | Non
     if not config.get("outro_text"):
         return None
 
+    import soundfile as sf
+    from voice_process.common import load_model, load_prompt_file, synthesize_segment_wavs
+
     profile_path = resolve_outro_profile_path(config)
     prompt_items = load_prompt_file(profile_path)
     tts = load_model()
@@ -1272,6 +1345,8 @@ def generate_outro_audio(config: dict[str, Any], output_dir: Path) -> Path | Non
 def run_stage4(
     config: dict[str, Any], timeline_path: Path, manifest_path: Path
 ) -> Path:
+    from video_compose.run_video_compose import run_video_compose
+
     output_dir = default_compose_output_dir(timeline_path, config)
     outro_audio = generate_outro_audio(config, output_dir)
     final_video = run_video_compose(
@@ -1295,6 +1370,7 @@ def run_stage4(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Interactive NarrateFlow pipeline")
     parser.add_argument("--project-dir")
+    parser.add_argument("--yes", action="store_true", help="Skip interactive confirmations.")
     parser.add_argument("--ppt")
     parser.add_argument("--input", dest="ppt")
     parser.add_argument("--page", type=int)
@@ -1328,13 +1404,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--probe-times")
     parser.add_argument("--api-key")
+    parser.add_argument("--video-understanding")
+    add_understand_arguments(parser)
     parser.add_argument(
         "--only-stage",
-        help="Run only one stage. Supported values: 1/text, 2/profile, 3/voice, 4/timeline, 5/compose",
+        help="Run only one stage. Supported values: text, understand, profile, voice, timeline, compose",
     )
     parser.add_argument(
         "--from-stage",
-        help="Start from one stage and continue. Supported values: 1/text, 2/profile, 3/voice, 4/timeline, 5/compose",
+        help="Start from one stage and continue. Supported values: text, understand, profile, voice, timeline, compose",
     )
     return parser
 
@@ -1364,6 +1442,16 @@ def main() -> None:
             stage1_result = run_stage1(config)
             show_stage1_summary(stage1_result)
             return
+        if target_stage == "understand":
+            stage_banner(1, total, "Video Understanding")
+            result = run_stage_understanding(config)
+            show_understanding_summary(result)
+            return
+        if target_stage == "script":
+            stage_banner(1, total, "Video Script Generation")
+            result = run_stage_script_from_understanding(config)
+            show_script_summary(result)
+            return
         if target_stage == "profile":
             stage_banner(2, total, "Voice Profile Generation")
             profile_path = run_stage2_profile(config)
@@ -1386,6 +1474,7 @@ def main() -> None:
                     "Stage 2 review action\n- r: regenerate one or more paragraphs\n- s: stop here\nChoice",
                     ["r", "s"],
                     default="s",
+                    assume_default=bool(config.get("yes")),
                 )
                 if action == "s":
                     return
@@ -1456,7 +1545,7 @@ def main() -> None:
             )
             while True:
                 show_stage2_summary(manifest_path)
-                action = ask_stage2_action(allow_back=True)
+                action = "c" if config.get("yes") else ask_stage2_action(allow_back=True)
                 if action == "c":
                     break
                 if action == "s":
@@ -1505,7 +1594,7 @@ def main() -> None:
             )
             while True:
                 show_stage2_summary(manifest_path)
-                action = ask_stage2_action(allow_back=run_mode == "full")
+                action = "c" if config.get("yes") else ask_stage2_action(allow_back=run_mode == "full")
                 if action == "c":
                     break
                 if action == "s":
@@ -1558,7 +1647,7 @@ def main() -> None:
                 )
                 while True:
                     show_stage2_summary(manifest_path)
-                    action2 = ask_stage2_action(allow_back=False)
+                    action2 = "c" if config.get("yes") else ask_stage2_action(allow_back=False)
                     if action2 == "c":
                         break
                     if action2 == "s":

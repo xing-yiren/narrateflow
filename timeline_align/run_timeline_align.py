@@ -30,6 +30,40 @@ def load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def build_window_time_timeline(spoken_json: Path) -> dict[str, Any]:
+    payload = load_json(spoken_json)
+    segments = []
+    for paragraph in payload.get("paragraphs", []):
+        if paragraph.get("is_silent") or not paragraph.get("spoken_text"):
+            continue
+        paragraph_index = int(paragraph["index"])
+        start_time = round(float(paragraph.get("start_time", 0.0)), 3)
+        end_time = round(float(paragraph.get("end_time", start_time)), 3)
+        segments.append(
+            {
+                "paragraph_index": paragraph_index,
+                "segment_id": f"p01_s{paragraph_index:03d}",
+                "spoken_text": paragraph.get("spoken_text", ""),
+                "matched": True,
+                "start": start_time,
+                "end_hint": end_time,
+                "anchor_start": start_time,
+                "anchor_end": end_time,
+                "start_time": start_time,
+                "end_time": end_time,
+                "confidence": 1.0,
+                "source": "video_window_time",
+                "source_window_id": paragraph.get("source_window_id"),
+            }
+        )
+    return {
+        "source_type": payload.get("source_type"),
+        "video_path": payload.get("video_path"),
+        "spoken_json": str(spoken_json),
+        "segments": segments,
+    }
+
+
 def auto_select_probe_times(
     keyframes_json: Path, desired_count: int = 8
 ) -> list[float]:
@@ -580,6 +614,12 @@ def run_timeline_align(
     gap_start_only: bool = True,
     cover_paragraph_index: int | None = None,
 ) -> dict[str, Any]:
+    spoken_payload = load_json(spoken_json)
+    if spoken_payload.get("source_type") == "video_auto_script":
+        public_payload = build_window_time_timeline(spoken_json)
+        write_json(output, public_payload)
+        return public_payload
+
     body_start_paragraph_index = (
         int(cover_paragraph_index) + 1 if cover_paragraph_index is not None else 2
     )

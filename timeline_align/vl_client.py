@@ -7,8 +7,14 @@ import re
 import subprocess
 import time
 from pathlib import Path
+from typing import Any
 
 import requests
+
+try:
+    import cv2
+except Exception:  # pragma: no cover
+    cv2 = None
 
 
 API_URL = "https://api.modelarts-maas.com/v1/chat/completions"
@@ -17,11 +23,153 @@ MAX_RETRIES = 2
 RETRY_BACKOFF_SEC = 3.0
 
 
-def load_api_key(explicit_key: str | None = None) -> str:
-    api_key = explicit_key or os.environ.get("MAAS_API_KEY")
+def read_env_file_key(name: str, env_path: Path | None = None) -> str | None:
+    path = env_path or Path(__file__).resolve().parents[1] / ".env"
+    if not path.exists():
+        return None
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key.strip() == name:
+            return value.strip().strip('"').strip("'")
+    return None
+
+
+def load_named_api_key(
+    name: str, explicit_key: str | None = None, env_path: Path | None = None
+) -> str:
+    api_key = explicit_key or os.environ.get(name) or read_env_file_key(name, env_path)
     if not api_key:
-        raise SystemExit("环境变量 MAAS_API_KEY 未设置，当前进程无法读取。")
+        raise SystemExit(f"{name} is required. Provide it via CLI, environment variable, or .env.")
     return api_key
+
+
+def load_api_key(explicit_key: str | None = None) -> str:
+    return load_named_api_key("MAAS_API_KEY", explicit_key)
+
+
+def load_gemini_api_key(explicit_key: str | None = None) -> str:
+    return load_named_api_key("GEMINI_API_KEY", explicit_key)
+
+
+def _annotate_frame_bytes(image_path: Path, label: str, time_text: str | None = None) -> bytes:
+    if cv2 is None:
+        raise RuntimeError("opencv-python is required for Gemini frame annotation")
+    frame = cv2.imread(str(image_path))
+    if frame is None:
+        raise FileNotFoundError(f"Unable to read image: {image_path}")
+    banner_h = max(28, min(56, frame.shape[0] // 10))
+    cv2.rectangle(frame, (0, 0), (min(frame.shape[1], 260), banner_h), (0, 0, 0), -1)
+    text = label if not time_text else f"{label} {time_text}"
+    cv2.putText(
+        frame,
+        text,
+        (8, max(18, banner_h - 10)),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.6,
+        (255, 255, 255),
+        2,
+        cv2.LINE_AA,
+    )
+    ok, encoded = cv2.imencode(".png", frame)
+    if not ok:
+        raise RuntimeError(f"Unable to encode annotated image: {image_path}")
+    return encoded.tobytes()
+
+
+def call_vl_gemini(
+    api_key: str,
+    windows: list[dict[str, Any]],
+    prompt: str,
+    model: str = "gemini-2.5-flash",
+) -> dict:
+    from google import genai
+    from google.genai import types
+
+    client = genai.Client(api_key=api_key)
+    contents: list[Any] = [prompt]
+    for window in windows:
+        contents.append(
+            f"Window {window['window_id']} | {float(window['start_time']):.2f}s - {float(window['end_time']):.2f}s"
+        )
+        for index, frame in enumerate(window.get("frames", []), start=1):
+            image_bytes = _annotate_frame_bytes(
+                Path(frame["image_path"]), f"#{index}", f"@ {float(frame['time']):.2f}s"
+            )
+            contents.append(types.Part.from_bytes(data=image_bytes, mime_type="image/png"))
+
+    config = types.GenerateContentConfig(
+        temperature=0.1,
+        response_mime_type="application/json",
+    )
+    last_error: Exception | None = None
+    for attempt in range(3):
+        try:
+            response = client.models.generate_content(
+                model=model,
+                contents=contents,
+                config=config,
+            )
+            return {"content": getattr(response, "text", "")}
+        except Exception as exc:
+            last_error = exc
+            if attempt >= 2:
+                raise
+            time.sleep(2.0 * (attempt + 1))
+    if last_error:
+        raise last_error
+    raise RuntimeError("Gemini request failed unexpectedly")
+
+
+def _extract_json_snippet(content: str) -> str | None:
+    content = content.strip()
+    fenced = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", content, flags=re.I)
+    if fenced:
+        return fenced.group(1).strip()
+    for open_char, close_char in [("[", "]"), ("{", "}")]:
+        start = content.find(open_char)
+        if start < 0:
+            continue
+        depth = 0
+        in_string = False
+        escape = False
+        for idx in range(start, len(content)):
+            char = content[idx]
+            if in_string:
+                if escape:
+                    escape = False
+                elif char == "\\":
+                    escape = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char == open_char:
+                depth += 1
+            elif char == close_char:
+                depth -= 1
+                if depth == 0:
+                    return content[start : idx + 1]
+    return None
+
+
+def parse_gemini_batch_response(content: str) -> list[dict[str, Any]]:
+    snippet = _extract_json_snippet(content)
+    if snippet:
+        try:
+            parsed = json.loads(snippet)
+            if isinstance(parsed, list):
+                return [item for item in parsed if isinstance(item, dict)]
+            if isinstance(parsed, dict):
+                items = parsed.get("windows")
+                if isinstance(items, list):
+                    return [item for item in items if isinstance(item, dict)]
+        except Exception:
+            pass
+    return []
 
 
 def load_page_segments(spoken_json: Path) -> tuple[str, list[dict]]:
@@ -115,6 +263,14 @@ def call_vl(api_key: str, image_path: Path, prompt: str) -> dict:
 
 
 def safe_parse_json_from_content(content: str) -> dict:
+    snippet = _extract_json_snippet(content) if "_extract_json_snippet" in globals() else None
+    if snippet:
+        try:
+            parsed = json.loads(snippet)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
     content = content.strip()
     fenced = re.search(r"```json\s*(\{.*?\})\s*```", content, flags=re.S)
     if fenced:
