@@ -64,6 +64,107 @@ def build_window_time_timeline(spoken_json: Path) -> dict[str, Any]:
     }
 
 
+def _normalize_match_text(text: str) -> str:
+    import re
+    clean = str(text or "").lower()
+    clean = re.sub(r"[^0-9a-zA-Z一-鿿]+", " ", clean)
+    return " ".join(clean.split())
+
+
+def _extract_match_tokens(text: str) -> list[str]:
+    import re
+    clean = _normalize_match_text(text)
+    tokens = []
+    for token in clean.split():
+        if len(token) >= 2:
+            tokens.append(token)
+    cjk_chunks = re.findall(r"[一-鿿]{2,}", clean)
+    tokens.extend(cjk_chunks)
+    seen = []
+    for token in tokens:
+        if token not in seen:
+            seen.append(token)
+    return seen
+
+
+def build_understanding_match_timeline(spoken_json: Path, understanding_json: Path) -> dict[str, Any]:
+    spoken_payload = load_json(spoken_json)
+    understanding = load_json(understanding_json)
+    windows = understanding.get("windows", [])
+    used_index = -1
+    segments = []
+    for segment in spoken_payload.get("segments", []):
+        paragraph_index = int(segment["paragraph_index"])
+        spoken_text = str(segment.get("spoken_text", ""))
+        tokens = _extract_match_tokens(spoken_text)
+        best = None
+        best_index = None
+        best_score = 0
+        for idx, window in enumerate(windows):
+            if idx <= used_index:
+                continue
+            haystack = " ".join([
+                str(window.get("visual_summary", "")),
+                " ".join(window.get("visible_text", [])),
+                " ".join(window.get("actions", [])),
+                " ".join(window.get("objects", [])),
+            ])
+            haystack_norm = _normalize_match_text(haystack)
+            score = 0
+            for token in tokens:
+                if token and token in haystack_norm:
+                    score += max(1, min(len(token), 8))
+            if score > best_score:
+                best_score = score
+                best = window
+                best_index = idx
+        matched = best is not None and best_score > 0
+        review_status = "understanding_match" if matched else "needs_manual"
+        if not matched:
+            for idx, window in enumerate(windows):
+                if idx <= used_index:
+                    continue
+                if not str(window.get("visual_summary", "")).strip():
+                    continue
+                best = window
+                best_index = idx
+                matched = True
+                review_status = "understanding_order_fallback"
+                break
+        if matched and best_index is not None:
+            used_index = int(best_index)
+        segments.append(
+            {
+                "paragraph_index": paragraph_index,
+                "spoken_text": spoken_text,
+                "timeline_enabled": True,
+                "matched": matched,
+                "start": round(float(best.get("start_time", 0.0)), 3) if matched else None,
+                "end_hint": round(float(best.get("end_time", 0.0)), 3) if matched else None,
+                "review_status": review_status,
+                "source_window_id": best.get("window_id") if matched else None,
+                "match_score": best_score,
+            }
+        )
+    matched_count = sum(1 for item in segments if item.get("matched"))
+    missing = [int(item["paragraph_index"]) for item in segments if not item.get("matched")]
+    status = "complete" if matched_count == len(segments) else ("near_complete" if matched_count >= max(1, len(segments) - 2) else "incomplete")
+    return {
+        "spoken_json": str(spoken_json),
+        "video_understanding_json": str(understanding_json),
+        "status": status,
+        "voice_count": len(segments),
+        "matched_count": matched_count,
+        "missing_paragraph_indices": missing,
+        "segments": segments,
+        "notes": [
+            "该结果基于 video_understanding 的文本匹配生成。",
+            "start 由匹配到的视频窗口起点给出。",
+            "未匹配段落需要人工调整。",
+        ],
+    }
+
+
 def auto_select_probe_times(
     keyframes_json: Path, desired_count: int = 8
 ) -> list[float]:
@@ -617,6 +718,11 @@ def run_timeline_align(
     spoken_payload = load_json(spoken_json)
     if spoken_payload.get("source_type") == "video_auto_script":
         public_payload = build_window_time_timeline(spoken_json)
+        write_json(output, public_payload)
+        return public_payload
+    understanding_candidate = output.parent.parent / "understanding" / "video_understanding.json"
+    if understanding_candidate.exists():
+        public_payload = build_understanding_match_timeline(spoken_json, understanding_candidate)
         write_json(output, public_payload)
         return public_payload
 
