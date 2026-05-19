@@ -1,23 +1,38 @@
 # NarrateFlow
 
-NarrateFlow is a human-in-the-loop pipeline for turning PPTs or documents into dubbed videos.
+NarrateFlow is a human-in-the-loop pipeline for turning videos and scripts into dubbed videos.
 
-It extracts narration text, generates paragraph-level voice audio, aligns audio to a target video timeline with a vision-language model, and renders the final dubbed video.
+It supports two modes:
+
+- **script-align**: you already have a narration script. NarrateFlow generates voice audio, understands the target video, and aligns each paragraph to a video time window.
+- **video-auto**: you only have a target video. NarrateFlow extracts keyframes, asks Gemini to understand each time window, drafts a continuous narration script, then generates voice and renders the final dubbed video.
+
+Both modes converge on the same downstream stages: voice generation, timeline alignment, and video composition.
 
 ## Environment
 
 | Component | Requirement | Notes |
 |---|---|---|
-| Python | 3.13 | Recommended runtime |
+| Python | 3.13 recommended | Some helper checks also work on 3.9, but `qwen-tts` needs 3.13 |
 | FFmpeg / FFprobe | Required | Used for frame extraction and video composition |
 | CUDA | Recommended | Speeds up local TTS inference |
 | Local TTS backend | Qwen-TTS | Used in `voice_process` |
-| VL backend | Qwen2.5-VL-72B via MAAS API | Used in `timeline_align` |
-| API key | `MAAS_API_KEY` | Required for timeline alignment |
+| VL backend (video understanding) | Gemini (`gemini-2.5-flash`) via `google-genai` | Used in `timeline_align/video_understanding.py` |
+| VL backend (legacy timeline probe) | Qwen2.5-VL via MAAS API | Optional, only used by the legacy probe path |
+| Gemini API key | `GEMINI_API_KEY` | Required for `understand` / `script` stages |
+| MAAS API key | `MAAS_API_KEY` | Optional, only for legacy timeline probe |
+
+### API key precedence
+
+Keys are resolved in this order:
+
+1. CLI flag: `--gemini-api-key`, `--api-key`
+2. Environment variable: `GEMINI_API_KEY`, `MAAS_API_KEY`
+3. Project root `.env` file: `GEMINI_API_KEY=...`, `MAAS_API_KEY=...`
+
+`.env` is already in `.gitignore` and will not be committed.
 
 ## Installation
-
-Install Python dependencies:
 
 ```bash
 pip install -r requirements.txt
@@ -25,288 +40,211 @@ pip install -r requirements.txt
 
 Notes:
 
-- `requirements.txt` covers the Python package dependencies used by the current pipeline.
-- For GPU acceleration, make sure your `torch` / `torchaudio` / `torchvision` installation matches your CUDA environment.
+- For GPU acceleration, install `torch` / `torchaudio` / `torchvision` matching your CUDA version.
 - `ffmpeg` / `ffprobe` must be installed separately and available in `PATH`.
-- `sox` is optional but recommended. If unavailable, speed adjustment falls back to `librosa`.
+- `sox` is optional. If unavailable, speed adjustment falls back to `librosa`.
+- `qwen-tts==0.1.1` currently requires Python 3.13. If your default Python is older, run the voice stages with a Python 3.13 environment such as `venv313`.
 
 ## Recommended Usage
 
-The recommended way to run NarrateFlow is through the interactive pipeline entrypoint:
+The main entrypoint is the interactive runner:
 
 ```bash
 python run_pipeline.py
 ```
 
-The pipeline now supports three execution modes:
+Execution modes:
 
-1. `full`: run the complete pipeline from Stage 1 to Stage 5
-2. `only`: run only one stage
+1. `full`: run the current text-first main path end to end (`text -> profile -> voice -> timeline -> compose`)
+2. `only`: run a single stage
 3. `from`: start from a stage and continue forward
 
-The CLI asks only for the inputs needed by the selected mode and stage.
+The CLI asks only for the inputs the selected mode and stage actually need.
 
-If you want one task to live under a single folder, you can also provide a project directory:
+Note: `video-auto` is already implemented through the `understand` + `script` stages, but it is not yet wired into a dedicated top-level mode selector in `run_pipeline.py`. For now, use the staged commands shown below for `video-auto`.
 
-- `--project-dir <path/to/job_dir>`
+To skip every interactive confirmation (e.g. inside scripts), add:
+
+```bash
+--yes
+```
+
+### Project directory
+
+For one task to live under a single folder, pass:
+
+```bash
+--project-dir <path/to/job_dir>
+```
 
 When a project directory is provided, NarrateFlow will:
 
-- keep a lightweight `task.json` under that directory to remember the latest inputs and main artifacts
-- place Stage 1 outputs under `text/`
-- place Stage 2 profile outputs under `profile/`
-- place Stage 3 audio outputs under `voice/`
-- place Stage 4 outputs under `timeline/`
-- place Stage 5 outputs under `compose/`
-- reuse recorded paths and known artifacts for later `only/from` runs
+- keep a lightweight `task.json` under that directory remembering the latest inputs and artifacts
+- place stage outputs under predictable subdirectories
+- reuse recorded paths and artifacts for later `only` / `from` runs
 
-This makes it easier to rerun later stages by pointing the pipeline to the same task folder.
-
-Stage 1 now supports both `.pptx` and `.txt` inputs. For plain text input:
-
-- use a `.txt` file as the document source
-- the pipeline treats it as a single-page script source
-- if the file contains blank lines, blank lines are used as paragraph boundaries
-- otherwise, each non-empty line is treated as one paragraph
-
-If a cover image should be shown before the main video starts, the interactive runner can now ask for:
-
-- whether to enable a cover intro
-- `cover image path`
-- `cover paragraph index`
-- optional cover duration override
-
-The interactive runner can also ask for an outro page:
-
-- whether to enable an outro page
-- `outro image path`
-- whether a fixed slogan audio already exists
-- otherwise, a fixed slogan text that can be synthesized with the current voice profile
-
-## Example Interactive Flow
-
-Below is a simplified example of what an interactive run looks like.
-
-### Input Collection
+Typical layout for one task:
 
 ```text
-Run mode
-- full: run the full pipeline
-- only: run only one stage
-- from: start from one stage and continue
-Choice (full/only/from) [full]: full
-
-PPT path: <path/to/example.pptx>
-Page number: 5
-Target video path: <path/to/example.mp4>
-
-Title mode
-- first: treat the first paragraph as title
-- none: treat all paragraphs as narration
-- manual: choose title paragraph indices manually
-Choice (first/none/manual) [first]: first
-
-Do you already have a voice profile file (y/n) [y]: y
-Voice profile path (.pt file or profile directory): outputs/voice_profiles/reference_voice
-
-Initial probe times (comma separated, keyframe times) [0,10,20,30]: 0,10,20,30
-
-Do you want to prepend a cover image before the main video (y/n) [n]: y
-Cover image path: <path/to/cover.png>
-Cover paragraph index [2]: 2
-Optional cover duration in seconds (empty means use cover paragraph audio duration):
-
-Do you want to append an outro page after the main video (y/n) [n]: y
-Outro image path: <path/to/outro.png>
-Do you already have a fixed outro slogan audio (y/n) [y]: n
-Outro slogan text: <your fixed slogan text>
+<project-dir>/
+├── task.json                 # latest inputs and artifacts
+├── text/                     # spoken.json from existing script (script-align)
+├── understanding/            # video understanding outputs (video-auto and script-align)
+│   ├── keyframes/
+│   ├── keyframes.json
+│   ├── window_manifest.json
+│   ├── video_understanding.json
+│   ├── gemini_understanding_requests.json
+│   └── gemini_understanding_responses.json
+├── script/                   # spoken.json drafted from video understanding (video-auto)
+├── profile/                  # voice profile artifacts
+├── voice/                    # paragraph-level audio + segments_manifest.json
+├── timeline/                 # page_XX.timeline.final.json (+ debug)
+└── compose/                  # final dubbed video
 ```
 
-For a plain text script, you can also start directly with:
+## Stages
+
+Supported stage names for `--only-stage` / `--from-stage`:
+
+```text
+text, understand, script, profile, voice, timeline, compose
+```
+
+| Stage | Used by | Purpose |
+|---|---|---|
+| `text` | script-align | Parse a `.pptx` or `.txt` into `page_XX.spoken.json` |
+| `understand` | both | Extract keyframes and ask Gemini to understand each video window |
+| `script` | video-auto | Draft a continuous narration `spoken.json` from `video_understanding.json` |
+| `profile` | both | Create a voice profile `.pt` from reference audio + text |
+| `voice` | both | Generate paragraph-level audio from `spoken.json` and a voice profile |
+| `timeline` | both | Produce `timeline.final.json` aligning narration to the video |
+| `compose` | both | Render the final dubbed video, optionally with cover and outro |
+
+Notes:
+
+- `text` is only for the script-align mode. `video-auto` skips it because the script is drafted by Gemini in the `script` stage.
+- `understand` is the shared video-understanding base used by both modes.
+- For video-auto, `script` reads `<project-dir>/understanding/video_understanding.json` and writes `<project-dir>/script/page_01.spoken.json`.
+- For script-align, `timeline` will reuse `<project-dir>/understanding/video_understanding.json` if present and match each paragraph to a video window by text similarity, falling back to monotonic ordering when text overlap is weak.
+
+## Common Recipes
+
+### script-align: existing script + target video
 
 ```bash
-python run_pipeline.py --only-stage text --input "<path/to/script.txt>"
+# 1. parse the existing script into spoken.json
+python run_pipeline.py --only-stage text \
+  --project-dir outputs/my_task \
+  --input path/to/script.txt \
+  --title-mode none
+
+# 2. understand the target video
+python run_pipeline.py --yes --only-stage understand \
+  --project-dir outputs/my_task \
+  --video path/to/video.mp4
+
+# 3. align narration to video time windows
+python run_pipeline.py --yes --only-stage timeline \
+  --project-dir outputs/my_task \
+  --video path/to/video.mp4
+
+# 4. generate per-paragraph voice (use a Python 3.13 env if needed)
+python run_pipeline.py --yes --only-stage voice \
+  --project-dir outputs/my_task \
+  --profile outputs/voice_profiles/<voice_name>/<voice_name>.pt
+
+# 5. compose the final video
+python run_pipeline.py --yes --only-stage compose \
+  --project-dir outputs/my_task \
+  --video path/to/video.mp4
 ```
 
-Or start a task under one folder:
+### video-auto: only the target video
 
 ```bash
-python run_pipeline.py --project-dir "<path/to/job_dir>"
+# 1. understand the target video
+python run_pipeline.py --yes --only-stage understand \
+  --project-dir outputs/my_task \
+  --video path/to/video.mp4
+
+# 2. draft a continuous narration spoken.json with Gemini
+python run_pipeline.py --yes --only-stage script \
+  --project-dir outputs/my_task
+
+# (optional) draft locally without calling Gemini again
+python run_pipeline.py --yes --only-stage script \
+  --project-dir outputs/my_task \
+  --no-gemini-script
+
+# 3. timeline / voice / compose are the same as script-align
 ```
 
-### Stage 1. Text Processing
+### Editing the generated script
 
-**Output and Review**
-
-Check:
-- paragraph extraction
-- title handling
-- spoken narration wording
-- whether header/footer-like short text has been filtered as expected
-
-Edit if needed:
-- `page_XX.spoken.json -> paragraphs[].spoken_text`
+Before voice generation, review and edit:
 
 ```text
-[1/5] Text Processing
-Stage 1 completed.
-extracted_json: outputs/scripts/<page_name>/page_05.extracted.json
-spoken_json:    outputs/scripts/<page_name>/page_05.spoken.json
-
-Stage 1 review action
-- c: continue to the next stage
-- s: stop here
-Choice (c/s) [c]: c
+<project-dir>/text/page_01.spoken.json   # script-align
+<project-dir>/script/page_01.spoken.json # video-auto
 ```
 
-### Stage 2. Voice Profile Generation
+Edit `paragraphs[].spoken_text` to fix wording. `is_silent: true` marks paragraphs without narration.
 
-**Output**
+### Cover and outro
 
-```text
-[2/5] Voice Profile Generation (skipped, using existing profile)
-profile_path: outputs/voice_profiles/reference_voice/reference_voice.pt
+The interactive runner can ask for a cover intro and an outro page. In non-interactive mode, pass them explicitly:
+
+```bash
+--cover-image path/to/cover.png
+--cover-paragraph-index 2
+--cover-duration-sec 3.0
+
+--outro-image path/to/outro.png
+--outro-audio path/to/outro.wav        # fixed audio, or
+--outro-text  "<slogan>"                # synthesized with the voice profile
 ```
 
-### Stage 3. Voice Generation
+## Output Conventions
 
-**Output and Review**
+- Spoken JSON: `paragraphs[]` with `index`, `spoken_text`, `is_silent`, `start_time`, `end_time`, plus segment-level entries for paragraphs that produce audio.
+- Voice manifest: `<project-dir>/voice/segments_manifest.json` listing each paragraph's audio file and duration.
+- Timeline: `<project-dir>/timeline/page_XX.timeline.final.json` with `segments[]` containing `paragraph_index`, `start`, `end_hint`, `matched`, `review_status`, and (for video-auto) `source_window_id`.
+- Final video: `<project-dir>/compose/page_composed.mp4` plus retimed video and audio mixes alongside it.
 
-Check:
-- paragraph-level audio quality
-- omitted or weakly spoken words
-- sentence endings
+## Repository Layout
 
-The pipeline now supports generating all narration paragraphs or only selected paragraphs.
+Active code:
 
-For selected paragraphs, you can also apply an optional volume gain.
+- `run_pipeline.py`: main interactive entrypoint, kept in sync with this README
+- `pipeline/`: stage wrappers (`stages.py`, `shared.py`)
+- `text_process/`: script parsing for `.pptx` / `.txt`
+- `timeline_align/`: keyframe extraction, Gemini client, video understanding, video-auto script drafting, timeline alignment
+- `voice_process/`: voice profile creation and paragraph-level TTS
+- `video_compose/`: final video composition with retiming, cover, and outro
 
-Examples:
-- empty input: generate all paragraphs
-- `3`: generate paragraph 3 only
-- `3,5,7`: generate selected paragraphs
+Lower-priority and local-only directories (not part of the active main pipeline):
 
-Equivalent CLI options:
-- `--paragraphs 3,5,7`
-- `--volume-gain 1.1`
-
-Edit or regenerate if needed:
-- edit `page_XX.spoken.json -> paragraphs[].spoken_text` if wording is wrong
-- regenerate by paragraph index if wording is correct but audio sounds bad
-
-```text
-[3/5] Voice Generation
-Paragraph indices to generate (comma separated, empty means all): 4,7
-Optional volume gain for this regeneration (e.g. 0.9, 1.1, default empty): 1.1
-
-Stage 3 completed.
-manifest: outputs/<voice_name>/<page_name>/segments_manifest.json
-segments_dir: outputs/<voice_name>/<page_name>/segments
-Available paragraphs:
-2, 3, 4, 5, 6, 7
-
-Stage 3 review action
-- c: continue to the next stage
-- r: regenerate one or more paragraphs
-- s: stop here
-Choice (c/r/s) [c]: r
-Enter paragraph indices to regenerate (comma separated or 'all'): 4,7
-```
-
-### Stage 4. Timeline Alignment
-
-**Output and Review**
-
-Check:
-- paragraph starts
-- missing paragraphs
-- ordering issues
-
-If a cover intro is enabled, the cover paragraph does not need a body timeline start.
-For example, when `cover_paragraph_index=2`, paragraph 2 is treated as the intro segment and the body timeline starts from paragraph 3.
-
-Edit if needed:
-- `page_XX.timeline.final.json -> segments[].start`
-- for missing paragraphs, set `matched=true` and provide `start`
-
-```text
-[4/5] Timeline Alignment
-Stage 4 completed.
-timeline: outputs/scripts/<page_name>/page_05.timeline.final.json
-status: complete
-missing: []
-
-Stage 4 review action
-- c: continue to the next stage
-- s: stop here
-Choice (c/s) [c]: c
-```
-
-### Stage 5. Video Composition
-
-**Output and Review**
-
-Check:
-- final pacing
-- retiming quality
-- audio-video alignment
-
-If a cover intro is enabled, Stage 5 will:
-- prepend the cover image as a static intro clip
-- use the selected cover paragraph audio at the beginning
-- shift the main video body after the intro duration
-
-If an outro page is enabled, Stage 5 will:
-- append a static outro page after the main video
-- use a fixed slogan audio if provided
-- otherwise generate the slogan audio from the current voice profile and append it at the end
-
-If something is wrong:
-- go back to Stage 3 for audio issues
-- go back to Stage 4 for timing issues
-
-```text
-[5/5] Video Composition
-Stage 5 completed.
-final_video: outputs/composed/<page_name>/page_composed.mp4
-output_dir:   outputs/composed/<page_name>
-```
-
-## Current Behavior
-
-- paragraph-level audio generation
-- optional paragraph selection and volume gain during Stage 3 voice generation
-- profile path accepts either a `.pt` file or a profile directory containing `<dirname>.pt`
-- text extraction filters some short header/footer-like slide text blocks based on layout position
-- optional cover intro support with `cover_image` and `cover_paragraph_index`
-- when a cover intro is enabled, the cover paragraph is excluded from body timeline alignment and the body starts from the next paragraph
-- optional outro page support with either fixed slogan audio or generated slogan audio
-- start-driven timeline semantics
-- local video retiming instead of truncating audio
-- current composition defaults:
-  - `buffer_sec = 1.2`
-  - `tail_buffer_sec = 1.5`
-  - `audio_tail_pad_sec = 0.5`
+- `web_ui/`: incomplete web UI, lower priority
+- `backup/`: backups of earlier implementations (ignored by Git)
+- `models/`: locally deployed model weights (ignored by Git)
+- `wheels/`: cached wheel installers (ignored by Git)
+- `sample/`: standalone Huawei Cloud MaaS interface examples (candidate for cleanup)
 
 ## Limitations
 
-- some source PPT files may contain malformed text encoding
-- timeline alignment quality depends on UI visibility, subtitle availability, and visual distinction between adjacent segments
-- human review is still recommended for production-quality output
-- some sentence endings may require spoken-text rewriting for better TTS delivery
-- the current workflow is page-oriented rather than a full-deck production pipeline
-
-## Project Structure
-
-- `outputs/voice_profiles/`: saved voice profiles `.pt`
-- `outputs/<voice_name>/<title>/`: generated voice artifacts for a page
-- `outputs/scripts/`: extracted text, spoken text, and timeline files
-- `pipeline/`: reusable page-level workflow scripts and older tooling
-- `sample/`: reference examples or experiments
+- Video understanding quality depends on Gemini availability and free-tier quota; large videos may hit rate limits.
+- Script-align text matching is currently lightweight (token overlap + monotonic ordering); complex scripts may need manual fixes in `timeline.final.json`.
+- The legacy MAAS / Qwen2.5-VL probe path is still in the codebase for the keyframe-based timeline probe but is not required for the main video-understanding flow.
+- Human review of the generated `spoken.json` is recommended before voice generation.
+- The pipeline is page-oriented; multi-page production runs are not yet first-class.
 
 ## Roadmap
 
-- continue refining timeline alignment quality and probe strategy
-- keep simplifying `run_pipeline.py` interaction without making the workflow more rigid
-- improve README examples with more realistic sample commands and outputs
-- add better review and recovery tools for paragraph-level regeneration and timeline fixing
+See `DEVELOPMENT.md` for the rolling push log and the overall TODO list. Highlights:
+
+- continue tightening the video-auto narration prompt and review workflow
+- improve script-align matching beyond token overlap
+- document required local model weights without committing large artifacts
+- decide retention or removal of `sample/`, `backup/`, and legacy backups
+- finish or explicitly defer `web_ui/`
