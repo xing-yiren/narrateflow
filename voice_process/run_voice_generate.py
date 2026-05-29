@@ -17,6 +17,7 @@ from voice_process.common import (
     load_model,
     load_prompt_file,
     recalculate_manifest_timings,
+    recommended_voice_batch_size,
     synthesize_segment_wavs,
     write_segment_outputs,
     write_json,
@@ -73,6 +74,7 @@ def run_voice_generate(
     max_new_tokens: int = 1024,
     device: str | None = None,
     dtype: str | None = None,
+    batch_size: int | None = None,
     paragraph_index: int | None = None,
     segment_id: str | None = None,
     volume_gain: float | None = None,
@@ -96,6 +98,7 @@ def run_voice_generate(
 
     prompt_items = load_prompt_file(profile_path)
     tts = load_model(device=device, dtype=dtype)
+    resolved_batch_size = batch_size or recommended_voice_batch_size(device)
     wavs, sample_rate = synthesize_segment_wavs(
         tts=tts,
         prompt_items=prompt_items,
@@ -103,6 +106,7 @@ def run_voice_generate(
         language=language,
         speed=speed,
         max_new_tokens=max_new_tokens,
+        batch_size=resolved_batch_size,
     )
     if volume_gain is not None:
         wavs = [apply_volume_gain(wav, volume_gain) for wav in wavs]
@@ -219,6 +223,7 @@ def main() -> None:
     parser.add_argument("--max-new-tokens", type=int, default=1024)
     parser.add_argument("--device", default=None)
     parser.add_argument("--dtype", default=None)
+    parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--paragraph-index", type=int, default=None)
     parser.add_argument("--segment-id", default=None)
     parser.add_argument("--volume-gain", type=float, default=None)
@@ -236,6 +241,7 @@ def main() -> None:
         max_new_tokens=args.max_new_tokens,
         device=args.device,
         dtype=args.dtype,
+        batch_size=args.batch_size,
         paragraph_index=args.paragraph_index,
         segment_id=args.segment_id,
         volume_gain=args.volume_gain,

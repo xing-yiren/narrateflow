@@ -93,3 +93,15 @@ paragraphs = ''
 
 # Optional. Empty means no volume gain override.
 volume_gain = ''
+
+# Optional. Runtime device for local TTS.
+# Supported: auto, cuda:0, mps, cpu.
+device = 'auto'
+
+# Optional. Runtime dtype for local TTS.
+# Supported: auto, float32, float16/fp16, bfloat16/bf16.
+dtype = 'auto'
+
+# Optional. Voice generation batch size.
+# Auto-suggested by device when left empty.
+voice_batch_size = ''

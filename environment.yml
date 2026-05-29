@@ -1,0 +1,23 @@
+name: narrateflow
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - ffmpeg
+  - pip
+  - pip:
+      - transformers
+      - accelerate
+      - torch
+      - torchaudio
+      - torchvision
+      - soundfile
+      - librosa
+      - tqdm
+      - numpy<2
+      - opencv-python<4.13
+      - gradio
+      - google-genai
+      # qwen-tts==0.1.1 is required for voice stages, but may be hosted outside public PyPI.
+      # Install it from the project-authorized index/source if public PyPI reports no matching distribution.
+      - qwen-tts==0.1.1

@@ -80,6 +80,33 @@ def empty_to_none(value: Any) -> Any:
     return value
 
 
+
+
+def normalize_optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    return int(value)
+
+
+def normalize_optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    return float(value)
+
+
+def normalize_optional_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = value.strip()
+        return value or None
+    return str(value)
+
+
 def load_toml_config(path: Path) -> dict[str, Any]:
     if not path.is_file():
         raise FileNotFoundError(f"Config file does not exist: {path}")
@@ -151,24 +178,24 @@ def apply_video_mode_config(args: argparse.Namespace, config_path: Path) -> None
             "Video mode full run requires either voice.profile or voice_name/ref_audio/ref_text in config/video_mode.toml"
         )
 
-    frame_stride = empty_to_none(timeline.get("frame_stride"))
+    frame_stride = normalize_optional_int(timeline.get("frame_stride"))
     if frame_stride is not None:
-        args.frame_stride = int(frame_stride)
-    min_gap_sec = empty_to_none(timeline.get("min_gap_sec"))
+        args.frame_stride = frame_stride
+    min_gap_sec = normalize_optional_float(timeline.get("min_gap_sec"))
     if min_gap_sec is not None:
-        args.min_gap_sec = float(min_gap_sec)
-    global_threshold = empty_to_none(timeline.get("global_threshold"))
+        args.min_gap_sec = min_gap_sec
+    global_threshold = normalize_optional_float(timeline.get("global_threshold"))
     if global_threshold is not None:
-        args.global_threshold = float(global_threshold)
-    subtitle_threshold = empty_to_none(timeline.get("subtitle_threshold"))
+        args.global_threshold = global_threshold
+    subtitle_threshold = normalize_optional_float(timeline.get("subtitle_threshold"))
     if subtitle_threshold is not None:
-        args.subtitle_threshold = float(subtitle_threshold)
-    detection_max_width = empty_to_none(timeline.get("detection_max_width"))
+        args.subtitle_threshold = subtitle_threshold
+    detection_max_width = normalize_optional_int(timeline.get("detection_max_width"))
     if detection_max_width is not None:
-        args.detection_max_width = int(detection_max_width)
-    fill_gap_sec = empty_to_none(timeline.get("fill_gap_sec"))
+        args.detection_max_width = detection_max_width
+    fill_gap_sec = normalize_optional_float(timeline.get("fill_gap_sec"))
     if fill_gap_sec is not None:
-        args.fill_gap_sec = float(fill_gap_sec)
+        args.fill_gap_sec = fill_gap_sec
     args.api_key = empty_to_none(timeline.get("api_key")) or args.api_key
 
     args.stage1_output_dir = empty_to_none(outputs.get("stage1_output_dir"))
@@ -205,7 +232,12 @@ def apply_video_mode_config(args: argparse.Namespace, config_path: Path) -> None
         args.outro_profile = None
 
     args.paragraphs = empty_to_none(generation.get("paragraphs"))
-    args.volume_gain = empty_to_none(generation.get("volume_gain"))
+    args.volume_gain = normalize_optional_float(generation.get("volume_gain"))
+    args.device = normalize_optional_str(generation.get("device")) or args.device
+    args.dtype = normalize_optional_str(generation.get("dtype")) or args.dtype
+    voice_batch_size = normalize_optional_int(generation.get("voice_batch_size"))
+    if voice_batch_size is not None:
+        args.voice_batch_size = voice_batch_size
 
 
 def resolve_initial_args(args: argparse.Namespace) -> dict[str, Any]:
@@ -430,6 +462,9 @@ def resolve_initial_args(args: argparse.Namespace) -> dict[str, Any]:
     config["outro_profile"] = outro_profile
     config["paragraphs"] = args.paragraphs
     config["volume_gain"] = args.volume_gain
+    config["device"] = getattr(args, "device", None)
+    config["dtype"] = getattr(args, "dtype", None)
+    config["voice_batch_size"] = getattr(args, "voice_batch_size", None)
     env_key_name = "GEMINI_API_KEY"
     config["api_key"] = args.api_key or read_env_key(env_key_name)
     if not config["api_key"] and not getattr(args, "skip_optional_prompts", False):
@@ -496,6 +531,12 @@ def summarize_initial_inputs(
         lines.append(f"paragraphs: {config.get('paragraphs')}")
     if config.get("volume_gain") is not None:
         lines.append(f"volume_gain: {config.get('volume_gain')}")
+    if config.get("device"):
+        lines.append(f"device: {config.get('device')}")
+    if config.get("dtype"):
+        lines.append(f"dtype: {config.get('dtype')}")
+    if config.get("voice_batch_size") is not None:
+        lines.append(f"voice_batch_size: {config.get('voice_batch_size')}")
 
     lines.append("api_key: " + ("set" if config.get("api_key") else "not set"))
     return lines
@@ -536,6 +577,9 @@ def sync_config_to_args(args: argparse.Namespace, config: dict[str, Any]) -> Non
     args.outro_profile = config.get("outro_profile")
     args.paragraphs = config.get("paragraphs")
     args.volume_gain = config.get("volume_gain")
+    args.device = config.get("device")
+    args.dtype = config.get("dtype")
+    args.voice_batch_size = config.get("voice_batch_size")
     args.api_key = config.get("api_key")
     args.frame_stride = config.get("frame_stride")
 

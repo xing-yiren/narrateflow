@@ -7,7 +7,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import librosa
 import numpy as np
@@ -26,7 +26,8 @@ MODELS_DIR = ROOT / "models"
 if SOX_DIR.exists():
     os.environ["PATH"] = str(SOX_DIR) + os.pathsep + os.environ.get("PATH", "")
 
-from qwen_tts import Qwen3TTSModel, VoiceClonePromptItem  # noqa: E402
+if TYPE_CHECKING:
+    from qwen_tts import Qwen3TTSModel, VoiceClonePromptItem
 
 
 OUTPUTS_DIR = ROOT / "outputs"
@@ -55,53 +56,154 @@ def detect_model_dir() -> Path:
     return candidates[0]
 
 
-def recommended_dtype() -> torch.dtype:
-    if not torch.cuda.is_available():
-        return torch.float32
-    capability = torch.cuda.get_device_capability(0)
-    return torch.bfloat16 if capability[0] >= 8 else torch.float16
+def import_qwen_tts() -> tuple[Any, Any]:
+    try:
+        from qwen_tts import Qwen3TTSModel, VoiceClonePromptItem
+    except ImportError as exc:
+        raise ImportError(
+            "缺少 qwen-tts 依赖，无法执行语音克隆/生成。请先安装 qwen-tts 再运行 voice/profile 阶段。"
+        ) from exc
+    return Qwen3TTSModel, VoiceClonePromptItem
+
+
+def is_mps_available() -> bool:
+    mps_backend = getattr(torch.backends, "mps", None)
+    if mps_backend is None:
+        return False
+    return bool(mps_backend.is_available() and mps_backend.is_built())
+
+
+def normalize_device(device: str | None = None) -> str:
+    requested = (device or os.environ.get("NARRATEFLOW_DEVICE") or "auto").strip().lower()
+    aliases = {
+        "gpu": "cuda:0",
+        "cuda": "cuda:0",
+        "cuda0": "cuda:0",
+        "apple": "mps",
+        "metal": "mps",
+        "mac": "mps",
+    }
+    requested = aliases.get(requested, requested)
+    if requested in {"", "auto"}:
+        if torch.cuda.is_available():
+            return "cuda:0"
+        if is_mps_available():
+            return "mps"
+        return "cpu"
+    if requested.startswith("cuda"):
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                f"Requested device {device!r}, but CUDA is not available in this Python environment."
+            )
+        return requested
+    if requested == "mps":
+        if not is_mps_available():
+            raise RuntimeError(
+                "Requested device 'mps', but PyTorch MPS is not available. "
+                "Use an Apple Silicon/native arm64 Python with an MPS-enabled torch wheel, "
+                "or set device='cpu'."
+            )
+        return requested
+    if requested == "cpu":
+        return requested
+    raise ValueError(
+        f"Unsupported device {device!r}. Use auto, cuda[:index], mps, or cpu."
+    )
 
 
 def recommended_device() -> str:
-    return "cuda:0" if torch.cuda.is_available() else "cpu"
+    return normalize_device("auto")
+
+
+def parse_dtype(dtype: str | torch.dtype | None, device: str | None = None) -> torch.dtype:
+    if isinstance(dtype, torch.dtype):
+        return dtype
+    requested = (
+        str(dtype or os.environ.get("NARRATEFLOW_DTYPE") or "auto").strip().lower()
+    )
+    device = normalize_device(device) if device else recommended_device()
+    if requested in {"", "auto"}:
+        if device.startswith("cuda"):
+            capability = torch.cuda.get_device_capability(0)
+            return torch.bfloat16 if capability[0] >= 8 else torch.float16
+        if device == "mps":
+            return torch.float16
+        return torch.float32
+    aliases = {
+        "fp32": "float32",
+        "float": "float32",
+        "fp16": "float16",
+        "half": "float16",
+        "bf16": "bfloat16",
+    }
+    requested = aliases.get(requested, requested)
+    if not hasattr(torch, requested):
+        raise ValueError(
+            f"Unsupported dtype {dtype!r}. Use auto, float32, float16/fp16, or bfloat16/bf16."
+        )
+    dtype_obj = getattr(torch, requested)
+    if not isinstance(dtype_obj, torch.dtype):
+        raise ValueError(f"Unsupported torch dtype: {dtype!r}")
+    return dtype_obj
+
+
+def recommended_dtype(device: str | None = None) -> torch.dtype:
+    return parse_dtype("auto", device=device)
+
+
+def recommended_voice_batch_size(device: str | None = None) -> int:
+    resolved = normalize_device(device)
+    if resolved.startswith("cuda"):
+        return 4
+    if resolved == "mps":
+        return 2
+    return 1
 
 
 def build_load_kwargs(
-    device: str | None = None, dtype: str | None = None
+    device: str | None = None, dtype: str | torch.dtype | None = None
 ) -> dict[str, Any]:
-    device = device or recommended_device()
-    dtype_obj = getattr(torch, dtype) if dtype else recommended_dtype()
+    resolved_device = normalize_device(device)
+    dtype_obj = parse_dtype(dtype, device=resolved_device)
     kwargs: dict[str, Any] = {
-        "device_map": device,
+        "device_map": resolved_device,
         "dtype": dtype_obj,
         "low_cpu_mem_usage": True,
     }
-    if device.startswith("cuda"):
+    if resolved_device.startswith("cuda"):
         kwargs["attn_implementation"] = "sdpa"
     return kwargs
 
 
 def load_model(
-    model_dir: Path | None = None, device: str | None = None, dtype: str | None = None
+    model_dir: Path | None = None,
+    device: str | None = None,
+    dtype: str | torch.dtype | None = None,
 ) -> Qwen3TTSModel:
     model_dir = model_dir or detect_model_dir()
-    return Qwen3TTSModel.from_pretrained(
-        str(model_dir), **build_load_kwargs(device=device, dtype=dtype)
+    Qwen3TTSModel, _ = import_qwen_tts()
+    load_kwargs = build_load_kwargs(device=device, dtype=dtype)
+    print(
+        "Loading Qwen-TTS model "
+        f"from {model_dir} on {load_kwargs['device_map']} "
+        f"with dtype={load_kwargs['dtype']}"
     )
+    return Qwen3TTSModel.from_pretrained(str(model_dir), **load_kwargs)
 
 
 def save_prompt_file(
-    prompt_items: list[VoiceClonePromptItem], profile_path: Path
+    prompt_items: list[Any], profile_path: Path
 ) -> None:
     payload = {"items": [asdict(item) for item in prompt_items]}
     profile_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(payload, profile_path)
 
 
-def load_prompt_file(profile_path: Path) -> list[VoiceClonePromptItem]:
+def load_prompt_file(profile_path: Path) -> list[Any]:
+    _, VoiceClonePromptItem = import_qwen_tts()
     payload = torch.load(profile_path, map_location="cpu", weights_only=True)
     items_raw = payload["items"]
-    items: list[VoiceClonePromptItem] = []
+    items: list[Any] = []
     for item in items_raw:
         ref_code = item.get("ref_code")
         if ref_code is not None and not torch.is_tensor(ref_code):
@@ -279,6 +381,8 @@ def synthesize_segment_wavs(
 
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
+                if hasattr(torch, "mps") and is_mps_available() and hasattr(torch.mps, "empty_cache"):
+                    torch.mps.empty_cache()
     finally:
         progress.close()
 
@@ -359,8 +463,14 @@ __all__ = [
     "apply_volume_gain",
     "build_voice_output_dir",
     "build_voice_file_stem",
+    "is_mps_available",
     "load_model",
     "load_prompt_file",
+    "normalize_device",
+    "parse_dtype",
+    "recommended_device",
+    "recommended_dtype",
+    "recommended_voice_batch_size",
     "save_prompt_file",
     "slugify",
     "recalculate_manifest_timings",

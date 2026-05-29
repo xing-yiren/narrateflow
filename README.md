@@ -330,6 +330,67 @@ output_dir:   outputs/<video_stem>/composed
 - `pipeline/`: reusable page-level workflow scripts and older tooling
 - `sample/`: reference examples or experiments
 
+
+
+## Device Support
+
+NarrateFlow now supports three local TTS deployment targets:
+
+- `cuda`: original CUDA acceleration path
+- `mps`: Apple Silicon / Metal backend when using a native arm64 Python + MPS-enabled PyTorch
+- `cpu`: fallback path for the current device or environments without GPU acceleration
+
+The runtime selection order in `auto` mode is:
+1. CUDA
+2. MPS
+3. CPU
+
+### Practical notes
+
+- If you are on macOS and want MPS, use a native arm64 Python, not an x86_64 interpreter under Rosetta.
+- If `qwen-tts` is not available or the model cannot be loaded on the selected backend, switch to `cpu` first to confirm the pipeline can run end-to-end.
+- `voice_batch_size` defaults to a small backend-aware value when not specified.
+
+### Video mode config additions
+
+You can now configure local TTS runtime in `config/video_mode.toml`:
+
+```toml
+[generation]
+device = 'auto'
+dtype = 'auto'
+voice_batch_size = ''
+```
+
+### Deployment check
+
+```bash
+conda env create -f environment.yml
+conda activate narrateflow
+python scripts/deploy_check.py --device auto
+```
+
+The check verifies Python dependencies, `ffmpeg` / `ffprobe`, `qwen-tts`, and the selected runtime backend.
+It also reports whether the local Qwen-TTS model exists under `models/Qwen/Qwen3-TTS-12Hz-1*Base`.
+
+### Prepare the local Qwen-TTS model
+
+If you do not already have the model in `models/Qwen/...`, use the helper script:
+
+```bash
+python scripts/prepare_qwen_tts_model.py --repo-id <correct-qwen-tts-repo-id>
+```
+
+The script downloads a Hugging Face snapshot into `models/Qwen/<repo-name>/`.
+If the repo id differs from the default example, pass the exact model repo id published by Qwen.
+
+### Suggested smoke test
+
+```bash
+python voice_process/run_voice_profile.py --voice-name demo --ref-audio <ref.wav> --ref-text <text> --device auto
+python voice_process/run_voice_generate.py --spoken-json <spoken.json> --profile <profile.pt> --device auto --batch-size 1
+```
+
 ## Roadmap
 
 - continue refining timeline alignment quality and probe strategy

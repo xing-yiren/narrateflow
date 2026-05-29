@@ -103,6 +103,8 @@ def run_stage2_profile(config: dict[str, Any]) -> Path:
         voice_name=config["voice_name"],
         ref_audio=config["ref_audio"],
         ref_text=config["ref_text"],
+        device=config.get("device"),
+        dtype=config.get("dtype"),
         output_dir=Path(config["profile_output_dir"])
         if config.get("profile_output_dir")
         else None,
@@ -123,6 +125,9 @@ def run_stage2_voice(
             spoken_json=spoken_json,
             profile_path=profile_path,
             voice_name=config.get("voice_name") or profile_path.stem,
+            device=config.get("device"),
+            dtype=config.get("dtype"),
+            batch_size=config.get("voice_batch_size"),
             volume_gain=volume_gain,
             output_dir=Path(config["voice_output_dir"])
             if config.get("voice_output_dir")
@@ -136,6 +141,9 @@ def run_stage2_voice(
             spoken_json=spoken_json,
             profile_path=profile_path,
             voice_name=config.get("voice_name") or profile_path.stem,
+            device=config.get("device"),
+            dtype=config.get("dtype"),
+            batch_size=config.get("voice_batch_size"),
             paragraph_index=paragraph_index,
             volume_gain=volume_gain,
             output_dir=Path(config["voice_output_dir"])
@@ -296,7 +304,7 @@ def generate_outro_audio(config: dict[str, Any], output_dir: Path) -> Path | Non
 
     profile_path = resolve_outro_profile_path(config)
     prompt_items = load_prompt_file(profile_path)
-    tts = load_model()
+    tts = load_model(device=config.get("device"), dtype=config.get("dtype"))
     segments = [
         {
             "segment_id": "outro_slogan",
