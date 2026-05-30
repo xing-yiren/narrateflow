@@ -15,6 +15,7 @@ This document tracks project-level development notes, push history, the overall 
 
 - Current baseline: refactored pipeline centered on `run_pipeline.py`, with `README.md` kept in sync as the main usage documentation.
 - Local model migration plan: see `LOCAL_VIDEO_UNDERSTANDING_PLAN.md` for the RTX 3060 12GB local VL strategy and staged rollout recommendation.
+- Parallel execution plan: see `DEVELOPMENT_PARALLEL_TASKS.md` for multi-Claude window task splitting, priorities, and artifact contracts.
 - Repository cleanup notes:
   - `sample/` contains Huawei Cloud MaaS interface test scripts and can likely be removed when no longer needed.
   - `pipeline/`, `tools/`, and `voice_clone_tool.py` are preserved backups of older implementations after refactoring.
