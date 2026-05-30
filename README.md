@@ -79,7 +79,8 @@ For one task to live under a single folder, pass:
 
 When a project directory is provided, NarrateFlow will:
 
-- keep a lightweight `task.json` under that directory remembering the latest inputs and artifacts
+- keep a lightweight `task.json` under that directory remembering the latest inputs, artifacts, and selected run options
+- copy source inputs such as the script, video, reference audio, cover/outro assets, and reusable profile file into the project folder when possible
 - place stage outputs under predictable subdirectories
 - reuse recorded paths and artifacts for later `only` / `from` runs
 
@@ -87,7 +88,8 @@ Typical layout for one task:
 
 ```text
 <project-dir>/
-├── task.json                 # latest inputs and artifacts
+├── task.json                 # latest inputs, artifacts, and run options
+├── source/                   # project-local input copies (script, video, ref audio, cover/outro assets)
 ├── text/                     # spoken.json from existing script (script-align)
 ├── understanding/            # video understanding outputs (video-auto and script-align)
 │   ├── keyframes/

@@ -124,7 +124,12 @@ text/page_01.spoken.json   understanding/video_understanding.json
 
 ```text
 <project-dir>/
-├── task.json                          # inputs / artifacts state
+├── task.json                          # inputs / artifacts / selected options state
+├── source/                            # project-local input copies
+│   ├── input.txt / input.pptx
+│   ├── video.mp4
+│   ├── ref_audio.wav
+│   └── cover.* / outro.*
 ├── text/                              # script-align spoken.json
 │   ├── page_01.extracted.json
 │   └── page_01.spoken.json
@@ -200,7 +205,7 @@ Key points:
 - `voice` and `compose` are fully shared between the two modes.
 - For video-auto, `timeline` reuses window times directly from `spoken.json`.
 - For script-align, `timeline` matches paragraphs to video windows by text overlap with monotonic ordering as fallback.
-- `--project-dir` is the source of truth for cross-stage state through `task.json` plus the per-stage subdirectories.
+- `--project-dir` is the source of truth for cross-stage state through `task.json` plus the per-stage subdirectories. Source inputs are copied into `source/` when possible so a task can be resumed from the project directory instead of repeatedly passing external paths.
 
 ## Near-term plan
 

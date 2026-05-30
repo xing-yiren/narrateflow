@@ -35,6 +35,7 @@ def run_stage_understand(config: dict[str, Any]) -> dict[str, Any]:
 
 def add_understand_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--understanding-output-dir")
+    parser.add_argument("--script-output-dir")
     parser.add_argument("--reference-document")
     parser.add_argument("--gemini-api-key")
     parser.add_argument("--gemini-model", default="gemini-2.5-flash")
@@ -49,8 +50,8 @@ def add_understand_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def default_script_dir(config: dict[str, Any]) -> Path:
-    if config.get("stage1_output_dir"):
-        return Path(config["stage1_output_dir"])
+    if config.get("script_output_dir"):
+        return Path(config["script_output_dir"])
     return project_output_root(config.get("project_dir"), config.get("video")) / "script"
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -138,7 +139,7 @@ def needs_video_input(run_mode: str, target_stage: str | None) -> bool:
     if run_mode == "full":
         return True
     return target_stage in {"understand", "timeline", "compose"} or (
-        run_mode == "from" and target_stage in {"profile", "voice", "understand"}
+        run_mode == "from" and target_stage in {"profile", "voice", "understand", "timeline"}
     )
 
 
@@ -283,6 +284,16 @@ def infer_project_stage_path(
     return None
 
 
+def infer_project_spoken_path(project_dir: Path | None, page: int | None) -> str | None:
+    if project_dir is None:
+        return None
+    for stage in ("text", "script"):
+        candidate = infer_project_stage_path(project_dir, stage, page, "spoken.json")
+        if candidate:
+            return candidate
+    return None
+
+
 def infer_project_source_path(project_dir: Path | None, stem: str, exts: tuple[str, ...]) -> str | None:
     if project_dir is None:
         return None
@@ -333,7 +344,28 @@ def apply_project_dir_inference(
         page = task_meta.get("page")
         args.page = page
 
+    if getattr(args, "title_mode", None) is None:
+        args.title_mode = task_meta.get("title_mode")
+    if not getattr(args, "title_indices", None):
+        title_indices = task_meta.get("title_indices") or []
+        if title_indices:
+            args.title_indices = ",".join(str(item) for item in title_indices)
+    if getattr(args, "cover_duration_sec", None) is None:
+        args.cover_duration_sec = task_meta.get("cover_duration_sec")
+    if (
+        getattr(args, "cover_paragraph_index", None) in {None, 2}
+        and task_meta.get("cover_paragraph_index") is not None
+        and (getattr(args, "cover_image", None) or task_inputs.get("cover_image"))
+    ):
+        args.cover_paragraph_index = int(task_meta["cover_paragraph_index"])
+    if not getattr(args, "probe_times", None):
+        args.probe_times = task_meta.get("probe_times")
+    if getattr(args, "probe_mode", "keyframes") == "keyframes" and task_meta.get("probe_mode"):
+        args.probe_mode = task_meta["probe_mode"]
+
     args.stage1_output_dir = args.stage1_output_dir or str(project_dir / "text")
+    args.script_output_dir = getattr(args, "script_output_dir", None) or str(project_dir / "script")
+    args.understanding_output_dir = getattr(args, "understanding_output_dir", None) or str(project_dir / "understanding")
     args.profile_output_dir = args.profile_output_dir or str(project_dir / "profile")
     args.voice_output_dir = args.voice_output_dir or str(project_dir / "voice")
     args.compose_output_dir = args.compose_output_dir or str(project_dir / "compose")
@@ -341,13 +373,17 @@ def apply_project_dir_inference(
     args.ppt = args.ppt or resolve_task_path(project_dir, task_inputs.get("document")) or infer_project_source_path(project_dir, "input", (".pptx", ".txt"))
     args.video = args.video or resolve_task_path(project_dir, task_inputs.get("video")) or infer_project_source_path(project_dir, "video", (".mp4", ".mov", ".mkv", ".avi"))
     args.profile = args.profile or resolve_task_path(project_dir, task_inputs.get("profile")) or infer_project_profile_path(project_dir)
+    args.voice_name = args.voice_name or task_inputs.get("voice_name")
+    args.ref_audio = args.ref_audio or resolve_task_path(project_dir, task_inputs.get("ref_audio")) or infer_project_source_path(project_dir, "ref_audio", (".wav", ".mp3", ".m4a", ".flac"))
+    args.ref_text = args.ref_text or task_inputs.get("ref_text")
     args.cover_image = args.cover_image or resolve_task_path(project_dir, task_inputs.get("cover_image")) or infer_project_source_path(project_dir, "cover", (".png", ".jpg", ".jpeg", ".webp"))
     args.reference_document = getattr(args, "reference_document", None) or resolve_task_path(project_dir, task_inputs.get("reference_document")) or infer_project_source_path(project_dir, "reference", (".txt", ".md"))
     args.outro_image = args.outro_image or resolve_task_path(project_dir, task_inputs.get("outro_image")) or infer_project_source_path(project_dir, "outro", (".png", ".jpg", ".jpeg", ".webp"))
     args.outro_audio = args.outro_audio or resolve_task_path(project_dir, task_inputs.get("outro_audio")) or infer_project_source_path(project_dir, "outro_audio", (".wav", ".mp3", ".m4a"))
     args.outro_text = args.outro_text or task_inputs.get("outro_text")
     args.outro_profile = args.outro_profile or resolve_task_path(project_dir, task_inputs.get("outro_profile"))
-    args.spoken_json = args.spoken_json or resolve_task_path(project_dir, task_artifacts.get("spoken_json")) or infer_project_stage_path(project_dir, "text", page, "spoken.json")
+    args.video_understanding = args.video_understanding or resolve_task_path(project_dir, task_artifacts.get("video_understanding")) or first_existing([project_dir / "understanding" / "video_understanding.json"])
+    args.spoken_json = args.spoken_json or resolve_task_path(project_dir, task_artifacts.get("spoken_json")) or infer_project_spoken_path(project_dir, page)
     args.timeline = args.timeline or resolve_task_path(project_dir, task_artifacts.get("timeline")) or infer_project_stage_path(project_dir, "timeline", page, "timeline.final.json")
     args.segments_manifest = args.segments_manifest or resolve_task_path(project_dir, task_artifacts.get("segments_manifest")) or first_existing([project_dir / "voice" / "segments_manifest.json"])
 
@@ -356,29 +392,113 @@ def is_text_file_input(path_text: str | None) -> bool:
     return bool(path_text) and Path(str(path_text)).suffix.lower() == ".txt"
 
 
+def ensure_project_layout(project_dir: Path | None) -> None:
+    if project_dir is None:
+        return
+    project_dir = project_dir.resolve()
+    for name in ("source", "text", "understanding", "script", "profile", "voice", "timeline", "compose"):
+        (project_dir / name).mkdir(parents=True, exist_ok=True)
+    (project_dir / "timeline" / "debug").mkdir(parents=True, exist_ok=True)
+
+
+def _copy_project_input_file(project_dir: Path, raw_path: str | None, dest_stem: str) -> str | None:
+    if not raw_path:
+        return None
+    source = Path(str(raw_path).strip().strip('"').strip("'"))
+    if not source.exists() or source.is_dir():
+        return raw_path
+    try:
+        source.resolve().relative_to(project_dir.resolve())
+        return str(source)
+    except Exception:
+        pass
+    dest_dir = project_dir / "source"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / f"{dest_stem}{source.suffix}"
+    if source.resolve() != dest.resolve():
+        shutil.copy2(source, dest)
+    return str(dest)
+
+
+def _copy_project_profile_file(project_dir: Path, raw_path: str | None, voice_name: str | None = None) -> str | None:
+    if not raw_path:
+        return None
+    source = Path(str(raw_path).strip().strip('"').strip("'"))
+    if not source.exists() or source.is_dir():
+        return raw_path
+    try:
+        source.resolve().relative_to(project_dir.resolve())
+        return str(source)
+    except Exception:
+        pass
+    dest_dir = project_dir / "profile"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest_name = slugify(voice_name or source.stem)
+    dest = dest_dir / f"{dest_name}.pt"
+    if source.resolve() != dest.resolve():
+        shutil.copy2(source, dest)
+    return str(dest)
+
+
 def persist_task_inputs(config: dict[str, Any]) -> None:
     project_dir = get_project_dir(config.get("project_dir"))
     if project_dir is None:
         return
-    project_dir.mkdir(parents=True, exist_ok=True)
-    source_type = "text" if is_text_file_input(config.get("ppt")) else "ppt"
+    ensure_project_layout(project_dir)
+    input_updates = {
+        "document": _copy_project_input_file(project_dir, config.get("ppt"), "input"),
+        "video": _copy_project_input_file(project_dir, config.get("video"), "video"),
+        "profile": _copy_project_profile_file(project_dir, config.get("profile"), config.get("voice_name")),
+        "voice_name": config.get("voice_name"),
+        "ref_audio": _copy_project_input_file(project_dir, config.get("ref_audio"), "ref_audio"),
+        "ref_text": config.get("ref_text"),
+        "cover_image": _copy_project_input_file(project_dir, config.get("cover_image"), "cover"),
+        "outro_image": _copy_project_input_file(project_dir, config.get("outro_image"), "outro"),
+        "outro_audio": _copy_project_input_file(project_dir, config.get("outro_audio"), "outro_audio"),
+        "outro_text": config.get("outro_text"),
+        "outro_profile": _copy_project_profile_file(project_dir, config.get("outro_profile")),
+        "reference_document": _copy_project_input_file(project_dir, config.get("reference_document"), "reference"),
+    }
+    input_updates = {key: value for key, value in input_updates.items() if value is not None}
+    config_key_map = {
+        "document": "ppt",
+        "video": "video",
+        "profile": "profile",
+        "voice_name": "voice_name",
+        "ref_audio": "ref_audio",
+        "ref_text": "ref_text",
+        "cover_image": "cover_image",
+        "outro_image": "outro_image",
+        "outro_audio": "outro_audio",
+        "outro_profile": "outro_profile",
+        "reference_document": "reference_document",
+    }
+    for input_key, config_key in config_key_map.items():
+        if input_key in input_updates:
+            config[config_key] = input_updates[input_key]
+    meta_updates: dict[str, Any] = {
+        "project_layout_version": 1,
+        "project_root": str(project_dir.resolve()),
+    }
+    if config.get("page") is not None:
+        meta_updates["page"] = config.get("page")
+    if config.get("ppt"):
+        meta_updates["source_type"] = "text" if is_text_file_input(config.get("ppt")) else "ppt"
+    if config.get("title_mode") is not None:
+        meta_updates["title_mode"] = config.get("title_mode")
+        meta_updates["title_indices"] = sorted(config.get("title_indices", []))
+    if config.get("cover_duration_sec") is not None:
+        meta_updates["cover_duration_sec"] = config.get("cover_duration_sec")
+    if config.get("cover_paragraph_index") is not None:
+        meta_updates["cover_paragraph_index"] = config.get("cover_paragraph_index")
+    if config.get("probe_mode"):
+        meta_updates["probe_mode"] = config.get("probe_mode")
+    if config.get("probe_times"):
+        meta_updates["probe_times"] = config.get("probe_times")
     update_task_record(
         project_dir,
-        input_updates={
-            "document": config.get("ppt"),
-            "video": config.get("video"),
-            "profile": config.get("profile"),
-            "cover_image": config.get("cover_image"),
-            "outro_image": config.get("outro_image"),
-            "outro_audio": config.get("outro_audio"),
-            "outro_text": config.get("outro_text"),
-            "outro_profile": config.get("outro_profile"),
-            "reference_document": config.get("reference_document"),
-        },
-        meta_updates={
-            "page": config.get("page"),
-            "source_type": source_type,
-        },
+        input_updates=input_updates,
+        meta_updates=meta_updates,
     )
 
 
@@ -411,6 +531,7 @@ def resolve_initial_args(args: argparse.Namespace) -> dict[str, Any]:
     config["fill_gap_sec"] = getattr(args, "fill_gap_sec", None)
     config["understand_batch_size"] = getattr(args, "understand_batch_size", 3)
     config["understanding_output_dir"] = getattr(args, "understanding_output_dir", None)
+    config["script_output_dir"] = getattr(args, "script_output_dir", None)
     config["video_understanding"] = getattr(args, "video_understanding", None)
     config["use_gemini_script"] = not bool(getattr(args, "no_gemini_script", False))
 
@@ -476,6 +597,14 @@ def resolve_initial_args(args: argparse.Namespace) -> dict[str, Any]:
             else prompt_existing_path("Target video path")
         )
 
+    if target_stage == "script" and not config.get("video_understanding"):
+        if config.get("yes"):
+            raise FileNotFoundError(
+                "video_understanding.json is required for script stage. "
+                "Expected it under <project-dir>/understanding/video_understanding.json or pass --video-understanding explicitly."
+            )
+        config["video_understanding"] = prompt_existing_path("Video understanding JSON path")
+
     profile = args.profile
     voice_name = args.voice_name
     ref_audio = args.ref_audio
@@ -522,6 +651,7 @@ def resolve_initial_args(args: argparse.Namespace) -> dict[str, Any]:
     config["ref_text"] = ref_text
 
     config["stage1_output_dir"] = args.stage1_output_dir
+    config["script_output_dir"] = getattr(args, "script_output_dir", None)
     config["profile_output_dir"] = args.profile_output_dir
     config["voice_output_dir"] = args.voice_output_dir
     config["timeline_output"] = args.timeline_output
@@ -1385,6 +1515,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--profile-output-dir")
     parser.add_argument("--voice-output-dir")
     parser.add_argument("--spoken-json")
+    parser.add_argument("--video-understanding")
     parser.add_argument("--timeline")
     parser.add_argument("--segments-manifest")
     parser.add_argument("--timeline-output")
@@ -1404,7 +1535,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--probe-times")
     parser.add_argument("--api-key")
-    parser.add_argument("--video-understanding")
     add_understand_arguments(parser)
     parser.add_argument(
         "--only-stage",
