@@ -13,6 +13,9 @@ if str(ROOT) not in sys.path:
 
 
 def check_command(name: str) -> bool:
+    python_bin_candidate = Path(sys.executable).resolve().parent / name
+    if python_bin_candidate.exists():
+        return True
     return shutil.which(name) is not None
 
 
@@ -70,6 +73,29 @@ def resolve_device_without_project_import(requested: str) -> tuple[str | None, s
     return resolved, f"{dtype}, batch_size={batch_size}", None
 
 
+def find_qwen_tts_model(root: Path) -> tuple[Path | None, str]:
+    model_root = root / "models" / "Qwen"
+    candidates = sorted(model_root.glob("Qwen3-TTS-12Hz-1*Base")) if model_root.exists() else []
+    if not candidates:
+        return None, "missing models/Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+
+    required_files = [
+        "config.json",
+        "generation_config.json",
+        "preprocessor_config.json",
+        "tokenizer_config.json",
+        "model.safetensors",
+        "speech_tokenizer/config.json",
+        "speech_tokenizer/model.safetensors",
+    ]
+    for candidate in candidates:
+        missing = [name for name in required_files if not (candidate / name).exists()]
+        if not missing:
+            return candidate, "ok"
+        return candidate, "incomplete, missing " + ", ".join(missing)
+    return None, "missing models/Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Check NarrateFlow local deployment readiness")
     parser.add_argument("--device", default="auto")
@@ -82,8 +108,12 @@ def main() -> int:
     print(f"python: {sys.version.split()[0]}")
     print(f"python_exe: {sys.executable}")
     print(f"device_requested: {args.device}")
-    print(f"ffmpeg: {'yes' if check_command('ffmpeg') else 'no'}")
-    print(f"ffprobe: {'yes' if check_command('ffprobe') else 'no'}")
+    ffmpeg_ok = check_command("ffmpeg")
+    ffprobe_ok = check_command("ffprobe")
+    sox_ok = check_command("sox")
+    print(f"ffmpeg: {'yes' if ffmpeg_ok else 'no'}")
+    print(f"ffprobe: {'yes' if ffprobe_ok else 'no'}")
+    print(f"sox: {'yes' if sox_ok else 'no'}")
 
     config_path = Path(args.video_config)
     print(f"video_config_exists: {config_path.exists()}")
@@ -111,26 +141,27 @@ def main() -> int:
         print(f"device_check_error: {error}")
 
     qwen_tts_ok = has_module("qwen_tts")
+    flash_attn_ok = has_module("flash_attn")
     print(f"qwen_tts: {'yes' if qwen_tts_ok else 'no'}")
+    print(f"flash_attn_optional: {'yes' if flash_attn_ok else 'no'}")
 
-    model_root = ROOT / "models" / "Qwen"
-    model_candidates = sorted(model_root.glob("Qwen3-TTS-12Hz-1*Base")) if model_root.exists() else []
-    print(
-        "qwen_tts_model: "
-        + (str(model_candidates[0]) if model_candidates else "missing models/Qwen/Qwen3-TTS-12Hz-1*Base")
-    )
+    model_dir, model_status = find_qwen_tts_model(ROOT)
+    print("qwen_tts_model: " + (str(model_dir) if model_dir else model_status))
+    if model_dir and model_status != "ok":
+        print(f"qwen_tts_model_status: {model_status}")
 
     if (
         missing_modules
-        or not check_command("ffmpeg")
-        or not check_command("ffprobe")
+        or not ffmpeg_ok
+        or not ffprobe_ok
+        or not sox_ok
         or error
         or not qwen_tts_ok
     ):
         print("deployment_check: incomplete")
         return 1
 
-    if not model_candidates:
+    if not model_dir or model_status != "ok":
         print("deployment_check: dependencies_ok_model_missing")
         return 0
 

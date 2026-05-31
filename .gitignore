@@ -59,6 +59,7 @@ inputs/
 *.m4a
 
 # Model / profile artifacts
+models/
 *.pt
 *.ckpt
 *.safetensors

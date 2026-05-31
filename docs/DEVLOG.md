@@ -50,7 +50,24 @@
 - [x] 安装 ffmpeg / ffprobe 并完成部署检查
 - [x] 补一个最小部署检查脚本
 - [x] 增加 `scripts/prepare_qwen_tts_model.py`，用于下载本地 Qwen-TTS 模型
-- [ ] 准备本地 Qwen-TTS 模型到 `models/Qwen/...`
-- [ ] 用真实 profile / spoken json 执行一次 voice stage smoke test
+- [x] 准备本地 Qwen-TTS 模型到 `models/Qwen/...`
+- [x] 用真实 profile / spoken json 执行一次 voice stage smoke test（CPU 与 MPS 均通过）
+- [x] 验证 flash-attn 安装：当前 macOS/MPS 环境无 CUDA/NVCC，安装失败；保持为可选 CUDA 加速项
 - [ ] 用真实视频执行一次 full 或 from-stage smoke test
 - [ ] push 到远端独立分支
+
+## 2026-05-31
+
+### 模型对接与真实运行验证
+- 确认官方 Base 模型仓库：`Qwen/Qwen3-TTS-12Hz-1.7B-Base`。
+- 直连 `huggingface.co` 超时，使用 `--endpoint https://hf-mirror.com` 成功下载模型。
+- 模型目录：`models/Qwen/Qwen3-TTS-12Hz-1.7B-Base`。
+- `scripts/deploy_check.py --device auto` 已通过：ffmpeg / ffprobe / sox / qwen-tts / 模型文件均 OK。
+- 真实 Qwen-TTS smoke test：
+  - CPU：profile 创建成功，voice generation 成功，输出约 4.00 秒 WAV。
+  - MPS：profile 创建成功，voice generation 成功，输出约 3.68 秒 WAV。
+- flash-attn：尝试安装 `flash-attn`，失败原因是没有 CUDA/NVCC / `CUDA_HOME`；该依赖仅为 CUDA 加速项，不影响 CPU/MPS 运行。
+
+### 后续 TODO
+- 用真实业务视频和真实音色素材跑一次完整 pipeline。
+- CUDA 机器上可单独验证 `flash-attn` 与 CUDA dtype 性能。

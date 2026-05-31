@@ -5,6 +5,7 @@ from dataclasses import asdict
 import json
 import os
 import re
+import shutil
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -23,8 +24,19 @@ if str(ROOT) not in sys.path:
 SOX_DIR = ROOT / "tools" / "sox" / "sox-14.4.2"
 MODELS_DIR = ROOT / "models"
 
+PYTHON_BIN_DIR = Path(sys.executable).resolve().parent
+
 if SOX_DIR.exists():
     os.environ["PATH"] = str(SOX_DIR) + os.pathsep + os.environ.get("PATH", "")
+if PYTHON_BIN_DIR.exists():
+    os.environ["PATH"] = str(PYTHON_BIN_DIR) + os.pathsep + os.environ.get("PATH", "")
+
+
+def resolve_sox_command() -> str | None:
+    bundled = SOX_DIR / "sox.exe"
+    if bundled.exists():
+        return str(bundled)
+    return shutil.which("sox")
 
 if TYPE_CHECKING:
     from qwen_tts import Qwen3TTSModel, VoiceClonePromptItem
@@ -290,7 +302,8 @@ def apply_speed(wav: np.ndarray, speed: float) -> np.ndarray:
     if speed <= 0:
         raise ValueError("speed 必须大于 0。")
 
-    if SOX_DIR.exists():
+    sox_cmd = resolve_sox_command()
+    if sox_cmd:
         tmp_dir = ROOT / "tmp"
         tmp_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
@@ -298,7 +311,7 @@ def apply_speed(wav: np.ndarray, speed: float) -> np.ndarray:
         out_path = tmp_dir / f"speed_out_{ts}.wav"
         wav = np.asarray(wav, dtype=np.float32)
         sf.write(in_path, wav, 24000)
-        cmd = f'"{SOX_DIR / "sox.exe"}" "{in_path}" "{out_path}" tempo {speed}'
+        cmd = f'"{sox_cmd}" "{in_path}" "{out_path}" tempo {speed}'
         exit_code = os.system(cmd)
         if exit_code == 0 and out_path.exists():
             slowed, _ = sf.read(out_path, dtype="float32")

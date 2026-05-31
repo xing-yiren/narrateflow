@@ -350,6 +350,7 @@ The runtime selection order in `auto` mode is:
 - If you are on macOS and want MPS, use a native arm64 Python, not an x86_64 interpreter under Rosetta.
 - If `qwen-tts` is not available or the model cannot be loaded on the selected backend, switch to `cpu` first to confirm the pipeline can run end-to-end.
 - `voice_batch_size` defaults to a small backend-aware value when not specified.
+- `flash-attn` is an optional CUDA acceleration package. It is not required on CPU/MPS and is not expected to install on macOS without CUDA/NVCC.
 
 ### Video mode config additions
 
@@ -378,11 +379,13 @@ It also reports whether the local Qwen-TTS model exists under `models/Qwen/Qwen3
 If you do not already have the model in `models/Qwen/...`, use the helper script:
 
 ```bash
-python scripts/prepare_qwen_tts_model.py --repo-id <correct-qwen-tts-repo-id>
+python scripts/prepare_qwen_tts_model.py
+# If huggingface.co is not reachable from your network:
+python scripts/prepare_qwen_tts_model.py --endpoint https://hf-mirror.com
 ```
 
-The script downloads a Hugging Face snapshot into `models/Qwen/<repo-name>/`.
-If the repo id differs from the default example, pass the exact model repo id published by Qwen.
+The default model repo is `Qwen/Qwen3-TTS-12Hz-1.7B-Base`, downloaded into `models/Qwen/Qwen3-TTS-12Hz-1.7B-Base/`.
+If the repo id differs, pass the exact model repo id published by Qwen.
 
 ### Suggested smoke test
 
