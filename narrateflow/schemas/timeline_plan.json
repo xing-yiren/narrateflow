@@ -22,8 +22,8 @@
             "type": "string",
             "enum": ["normal", "merge", "speed_change", "broll", "freeze", "manual_review"]
           },
-          "speed_factor": { "type": "number" },
-          "freeze_point": { "type": "number" },
+          "speed_factor": { "type": ["number", "null"] },
+          "freeze_point": { "type": ["number", "null"] },
           "matched_windows": {
             "type": "array",
             "items": { "type": "integer" }

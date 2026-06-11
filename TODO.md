@@ -6,28 +6,28 @@
 
 ## P0 — MVP：端到端链路跑通（目标 2-3 周）
 
-- [ ] **[P0.1]** 项目骨架搭建：目录结构、config.yaml、requirements.txt、__init__.py
-- [ ] **[P0.2]** Stage 0：资产探测与文稿解析 (stage0_manifest.py)
+- [x] **[P0.1]** 项目骨架搭建 ✅：目录结构、config.yaml、requirements.txt、__init__.py
+- [x] **[P0.2]** Stage 0 ✅：资产探测与文稿解析 (stage0_manifest.py)
   - [ ] ffprobe 封装 (utils/ffprobe.py)
   - [ ] 文稿分句 + 规范化
   - [ ] project_manifest.json schema + 输出
-- [ ] **[P0.3]** Stage 1：视频结构化理解 (stage1_vision.py) — P0 用云端 API 快速验证
+- [x] **[P0.3]** Stage 1 ✅ (Mock VLM)：视频结构化理解 (stage1_vision.py) — P0 用云端 API 快速验证
   - [ ] PySceneDetect 物理切片
   - [ ] 抽帧逻辑（动态帧差 + 硬上限 12 帧 + 长边 600px）
   - [ ] VLM 推理 + JSON 解析（容错）
   - [ ] Schema 校验 (utils/schema_validator.py)
-- [ ] **[P0.4]** Stage 2：旁白音频生成 (stage2_tts.py) — P0 暂用 edge-tts 跑通
+- [x] **[P0.4]** Stage 2 ✅ (edge-tts)：旁白音频生成 (stage2_tts.py) — P0 暂用 edge-tts 跑通
   - [ ] TTS 合成
   - [ ] 真实音频时长读取 (utils/audio.py)
-- [ ] **[P0.5]** Stage 3：时间轴对齐 (stage3_align.py) — 简化版顺序+时长
+- [x] **[P0.5]** Stage 3 ✅ (比例分配对齐)：时间轴对齐 (stage3_align.py) — 简化版顺序+时长
   - [ ] 顺序匹配 + 时长匹配
   - [ ] 原速播放 / 轻微变速策略
-- [ ] **[P0.6]** Stage 4：FFmpeg 渲染合成 (stage4_render.py)
+- [x] **[P0.6]** Stage 4 ✅ (h264_videotoolbox)：FFmpeg 渲染合成 (stage4_render.py)
   - [ ] Mac: h264_videotoolbox 编码
   - [ ] 音频拼接 + 混音
   - [ ] 自动质检
-- [ ] **[P0.7]** main.py 总控脚本
-- [ ] **[P0.8]** 端到端集成测试
+- [x] **[P0.7]** main.py ✅ 总控脚本
+- [x] **[P0.8]** 端到端集成测试 ✅
 
 ---
 
@@ -77,4 +77,5 @@
 
 | 日期 | 完成事项 | 测试结果 | 备注 |
 |------|---------|---------|------|
+| 2026-06-11 | P0 全部完成 | 47.3s 全流程, 输出 77s 配音视频 | Mock VLM + edge-tts |
 | | | | |
