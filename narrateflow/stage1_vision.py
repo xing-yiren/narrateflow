@@ -18,6 +18,10 @@ from PIL import Image
 
 from narrateflow.utils.schema_validator import extract_json_from_text, validate_vlm_output
 from narrateflow.utils.ffprobe import get_video_info
+from narrateflow.utils.memory_guard import log_memory_status, check_memory_safe
+
+# 默认 System Prompt 路径
+_VLM_PROMPT_PATH = Path(__file__).parent / "prompts" / "vlm_system.txt"
 
 logger = logging.getLogger(__name__)
 
@@ -349,26 +353,17 @@ class OpenAIProvider(VLMProvider):
 # System Prompt 模板
 # ═══════════════════════════════════════════════════════════════
 
-VLM_SYSTEM_PROMPT = """你是一个视频分析助手。你将看到来自同一段视频的几帧连续截图。
-请像导演一样描述这段画面的内容，并按以下 JSON 格式输出（不要用 markdown 包裹）：
-
-{
-  "visual_summary": "用1-2句话描述这段画面的主要内容",
-  "physical_tags": ["画面中出现的物体/人物/场景标签", "..."],
-  "mood_tags": ["专业", "温馨", ...],
-  "visible_text": ["画面中出现的文字", "..."],
-  "action_candidates": [
-    {"description": "正在发生的动作", "time_hint": 0.0, "confidence": 0.8}
-  ],
-  "uncertainty": "如果不确定某些内容，请在这里说明"
-}
-
-要求：
-- 只输出 JSON，不要加任何解释或 markdown
-- physical_tags 列出画面中实际可见的物体/人物/场景
-- if 画面是录屏/PPT/界面，标注"界面","录屏"等标签
-- action_candidates 的 confidence 必须在 0-1 之间
-- 如果画面信息不足，在 uncertainty 中诚实说明"""
+def _load_system_prompt(prompt_path: Optional[str] = None) -> str:
+    """加载 VLM System Prompt"""
+    path = Path(prompt_path) if prompt_path else _VLM_PROMPT_PATH
+    if path.exists():
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    # 兜底内置 prompt
+    logger.warning(f"System Prompt 文件不存在: {path}，使用内置版本")
+    return """你是一个视频分析助手。你将看到来自同一段视频的几帧连续截图。
+请输出 JSON 格式的画面描述，包含 visual_summary, physical_tags, mood_tags,
+visible_text, action_candidates, uncertainty 字段。"""
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -381,10 +376,19 @@ def run_stage1(
     output_dir: str = "output/default",
     config: Optional[Dict] = None,
     vlm_provider: Optional[VLMProvider] = None,
+    system_prompt_path: Optional[str] = None,
 ) -> str:
     """
     Stage 1 主入口。
-    
+
+    Args:
+        video_path: 输入视频路径
+        manifest_path: Stage 0 输出的 manifest
+        output_dir: 输出目录
+        config: 全局配置
+        vlm_provider: VLM 实现（默认 Mock）
+        system_prompt_path: 自定义 System Prompt 文件路径
+
     Returns:
         video_meta.ai.json 的路径
     """
@@ -430,30 +434,54 @@ def run_stage1(
     
     # 4. VLM 推理
     if vlm_provider is None:
-        logger.warning("未提供 VLM Provider，使用 Mock 模式（非真实 VLM 输出）")
-        vlm_provider = MockVLMProvider()
-    
-    provider_name = vlm_provider.__class__.__name__
+        # 尝试自动选择 Provider
+        vlm_provider_type = stage1_cfg.get("vlm_provider", "mock")
+        if vlm_provider_type == "ollama":
+            try:
+                from narrateflow.providers.vlm_ollama import OllamaVLMProvider
+                vlm_provider = OllamaVLMProvider(
+                    model=vlm_cfg.get("model_name_qwen", "qwen3-vl:8b"),
+                    num_ctx=vlm_cfg.get("num_ctx", 4096),
+                    num_predict=vlm_cfg.get("num_predict", 512),
+                    temperature=vlm_cfg.get("temperature", 0.3),
+                    keep_alive=vlm_cfg.get("keep_alive", 0),
+                )
+                logger.info("✓ Ollama VLM Provider 已初始化")
+            except Exception as e:
+                logger.warning(f"Ollama 初始化失败: {e}，降级为 Mock")
+                vlm_provider = MockVLMProvider()
+        else:
+            logger.warning("未提供 VLM Provider，使用 Mock 模式（非真实 VLM 输出）")
+            vlm_provider = MockVLMProvider()
+
+    provider_name = vlm_provider.name if hasattr(vlm_provider, 'name') else vlm_provider.__class__.__name__
     logger.info(f"VLM Provider: {provider_name}")
-    
+
+    # 加载 System Prompt
+    system_prompt = _load_system_prompt(system_prompt_path)
+    logger.debug(f"System Prompt: {len(system_prompt)} 字符")
+
+    # 内存检查（启动前记录基线）
+    log_memory_status("Stage1 启动")
+
     total_windows = len(windows)
     parsed_count = 0
     error_count = 0
     t_start = time.time()
-    
+
     for i, window in enumerate(windows):
         w_id = window["window_id"]
         frame_rel_paths = window["frames"]
         # 转换为绝对路径
         frame_abs_paths = [str(output_dir / p) for p in frame_rel_paths]
-        
+
         logger.info(f"  推理窗口 {w_id+1}/{total_windows} "
                     f"({window['duration']:.1f}s, {len(frame_abs_paths)} 帧)...")
-        
+
         for attempt in range(parse_cfg.get("max_retries_per_window", 2) + 1):
             try:
                 vlm_output = vlm_provider.analyze_window(
-                    frame_abs_paths, VLM_SYSTEM_PROMPT, w_id
+                    frame_abs_paths, system_prompt, w_id
                 )
                 
                 # Schema 校验
@@ -487,8 +515,14 @@ def run_stage1(
                     error_count += 1
     
     t_elapsed = time.time() - t_start
+    log_memory_status("Stage1 推理完成")
     logger.info(f"VLM 推理完成: {parsed_count} 成功, {error_count} 失败, "
                 f"耗时 {t_elapsed:.1f}s")
+
+    # 释放 VLM（Mac 可常驻但保留此安全机制）
+    if hasattr(vlm_provider, 'release'):
+        vlm_provider.release()
+        log_memory_status("Stage1 模型释放后")
     
     # 5. 组装输出
     video_meta = {

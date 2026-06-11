@@ -13,7 +13,7 @@ from typing import Dict, Optional
 import yaml
 
 from narrateflow.stage0_manifest import run_stage0
-from narrateflow.stage1_vision import run_stage1, MockVLMProvider, OpenAIProvider
+from narrateflow.stage1_vision import run_stage1, MockVLMProvider
 from narrateflow.stage2_tts import run_stage2, EdgeTTSProvider
 from narrateflow.stage3_align import run_stage3
 from narrateflow.stage4_render import run_stage4
@@ -131,11 +131,9 @@ def run_pipeline(
                 vlm_provider = MockVLMProvider()
                 logger.info("⚠ 使用 Mock VLM Provider（非真实 AI 输出）")
             else:
-                # 使用 OpenAI 或其他云端 API
-                vlm_provider = OpenAIProvider(
-                    model=config.get("stage1", {}).get("vlm", {}).get("model_name", "gpt-4o"),
-                )
-            
+                # 自动选择: 优先 Ollama 本地，不支持则降级
+                vlm_provider = None  # run_stage1 will auto-detect from config
+
             run_stage1(
                 video_path, manifest_path, output_dir, config,
                 vlm_provider=vlm_provider,

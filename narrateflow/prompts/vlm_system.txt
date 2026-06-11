@@ -1,0 +1,9 @@
+分析视频截图，输出JSON，包含以下字段：
+summary: 画面的主要内容和变化
+tags: 可见物体、人物、场景、UI元素
+mood: 情绪氛围
+text: 画面中出现的文字
+actions: 动作列表，每项有desc描述和confidence置信度0到1
+uncertainty: 不确定之处，无则写无
+
+用JSON输出。

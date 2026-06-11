@@ -37,11 +37,11 @@ stage1:
   
   # VLM 参数
   vlm:
-    model_name_qwen: qwen3-vl-8b-thinking  # Ollama 模型名
+    model_name_qwen: qwen3-vl:8b               # Ollama 模型名（当前为 Q4_K_M 量化）
     num_ctx: 4096
-    num_predict: 512
+    num_predict: 1536                           # Thinking 内部推理 ~900tok，需 ≥1536 完整 JSON
     temperature: 0.3
-    keep_alive: 0              # 推理后立即释放（Mac: 0 或 -1 常驻）
+    keep_alive: 0                               # 推理后立即释放（Mac: 0 或 -1 常驻）
     
   # 解析容错
   parse:
@@ -131,6 +131,6 @@ logging:
 
 # ========== 内存管理 (Mac) ==========
 memory:
-  safe_threshold_percent: 80    # 内存使用超此百分比触发降级
+  safe_threshold_percent: 90    # Mac 统一内存压力阈值（含系统缓存，80太低）
   release_after_stage: true     # 每 Stage 结束后释放资源
   monitor_interval: 1.0         # 内存监控间隔(秒)

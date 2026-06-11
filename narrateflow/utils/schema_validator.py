@@ -89,8 +89,12 @@ def extract_json_from_text(text: str) -> Optional[Dict]:
         except json.JSONDecodeError:
             pass
     
-    # 4. 正则兜底：找最外层 { }
+    # 4. 正则兜底：找最外层 { }，也处理截断 JSON（缺少 }）
     brace_match = re.search(r'\{.*\}', text, re.DOTALL)
+    truncated_match = None
+    if not brace_match:
+        # 找开头 { 但没有结尾 } 的截断 JSON
+        truncated_match = re.search(r'\{.*$', text, re.DOTALL)
     if brace_match:
         try:
             return json.loads(brace_match.group(0))
@@ -106,7 +110,31 @@ def extract_json_from_text(text: str) -> Optional[Dict]:
             return json.loads(candidate)
         except json.JSONDecodeError:
             pass
-    
+
+    # 6. Thinking 模型截断修复：自动闭合未完成的括号
+    repair_match = brace_match or truncated_match
+    if repair_match:
+        candidate = repair_match.group(0).rstrip()
+        # 计算未闭合的括号
+        open_braces = candidate.count("{") - candidate.count("}")
+        open_brackets = candidate.count("[") - candidate.count("]")
+        # 检查是否在字符串内部被截断（最后一个 " 是否闭合）
+        if candidate.count('"') % 2 != 0:
+            candidate += '"'  # 闭合最后一个字符串
+        # 先闭合内层括号（数组），再闭合外层（对象）
+        candidate += "]" * max(0, open_brackets) + "}" * max(0, open_braces)
+        # 再次移除尾部逗号
+        candidate = re.sub(r',(\s*[}\]])', r'\1', candidate)
+        try:
+            result = json.loads(candidate)
+            logger.warning(
+                "JSON truncated but auto-repaired "
+                "(+%d braces, +%d brackets)", open_braces, open_brackets
+            )
+            return result
+        except json.JSONDecodeError:
+            pass
+
     logger.error(f"无法从文本中提取 JSON: {text[:200]}...")
     return None
 
