@@ -1,0 +1,136 @@
+# NarrateFlow 全局配置文件 — Mac M4 Pro 路径
+# 所有 Stage 共享此配置
+
+# ========== 平台 ==========
+platform: mac
+hardware:
+  unified_memory_gb: 24
+  gpu_backend: mps  # Metal Performance Shaders
+
+# ========== Stage 0: 资产探测 ==========
+stage0:
+  ffprobe_path: ffprobe  # 或完整路径
+  narration_encoding: utf-8
+  sentence_min_chars: 25   # 每段最少中文字符
+  sentence_max_chars: 60   # 每段最多中文字符
+
+# ========== Stage 1: 视频理解 ==========
+stage1:
+  # P0: 使用云端 API 快速验证
+  # P1: 切换为本地 Ollama
+  vlm_provider: openai       # P0: openai | P1: ollama
+  
+  # PySceneDetect
+  scenedetect:
+    backend: opencv
+    threshold: 27.0          # ContentDetector 阈值
+    min_scene_len: 15        # 最小镜头帧数 (0.5s@30fps)
+    max_scene_duration: 30   # 长镜头二级切分阈值(秒)
+  
+  # 抽帧约束
+  frame_extraction:
+    max_frames_per_window: 12  # 硬上限
+    max_long_edge_px: 600      # 长边缩放像素
+    short_window_frames: 3     # 短镜头(<=5s)抽帧数
+    motion_threshold: 0.15     # 帧差阈值，低于此值视为静止
+    jpeg_quality: 85           # 帧保存 JPEG 质量
+  
+  # VLM 参数
+  vlm:
+    model_name_qwen: qwen3-vl-8b-thinking  # Ollama 模型名
+    num_ctx: 4096
+    num_predict: 512
+    temperature: 0.3
+    keep_alive: 0              # 推理后立即释放（Mac: 0 或 -1 常驻）
+    
+  # 解析容错
+  parse:
+    timeout_per_window: 120    # 每窗口推理超时(秒)
+    max_retries_per_window: 2
+    fallback_to_regex: true
+
+# ========== Stage 2: TTS ==========
+stage2:
+  # P0: edge-tts (简单方案)
+  # P3: voxcpm2
+  tts_provider: edge_tts       # P0: edge_tts | P3: voxcpm2
+  
+  # edge-tts 配置
+  edge_tts:
+    voice: zh-CN-XiaoxiaoNeural
+    rate: "+0%"
+    pitch: "+0Hz"
+    
+  # VoxCPM2 配置 (P3)
+  voxcpm2:
+    model_path: /path/to/voxcpm2
+    dtype: fp16                # Mac 必须 fp16，禁止 bf16
+    sample_rate: 48000
+    
+  # 发音词典
+  pronunciation_dict: dicts/pronunciation.json
+  
+  # 单段重试
+  max_retries_per_segment: 3
+
+# ========== Stage 3: 时间轴对齐 ==========
+stage3:
+  # P0: 仅顺序+时长 (简化版)
+  # P2: 7 维评分
+  scoring_weights:
+    order: 0.25
+    duration: 0.25
+    semantic: 0.20
+    physical_tags: 0.10
+    ocr: 0.10
+    action: 0.05
+    mood: 0.05
+    
+  # 匹配阈值
+  min_score_threshold: 0.4     # 低于此值标记 needs_review
+  max_windows_per_para: 3     # 一个段落最多匹配的连续窗口数
+  
+  # 重定时策略
+  retime:
+    speed_range: [0.90, 1.10]  # 轻微变速范围
+    freeze_max_duration: 0.8   # 短定格最大时长(秒)
+    broll_max_padding: 3.0     # B-roll 补画面最大时长(秒)
+    duration_tolerance: 0.5    # 音视频时长差在此范围内视为匹配
+
+# ========== Stage 4: 渲染 ==========
+stage4:
+  # Mac 编码器
+  video_encoder: h264_videotoolbox   # macOS 硬编
+  # 兜底: libx264
+  
+  video:
+    fps: 30                     # 输出帧率
+    crf: 23                     # libx264 软编质量
+    preset: medium              # libx264 preset
+    bitrate: 5M                 # 硬编码率
+    
+  audio:
+    codec: aac
+    bitrate: 192k
+    sample_rate: 48000
+    
+  qc:
+    duration_tolerance: 2.0     # 时长校验容许偏差(秒)
+    black_frame_threshold: 16   # 黑帧检测阈值(亮度<16)
+    silence_threshold_db: -40   # 静音检测阈值
+
+# ========== 全局 ==========
+project:
+  input_dir: input
+  output_dir: output
+  project_id: default           # 可通过命令行覆盖
+
+logging:
+  level: INFO
+  file: narrateflow.log
+
+# ========== 内存管理 (Mac) ==========
+memory:
+  safe_threshold_percent: 80    # 内存使用超此百分比触发降级
+  release_after_stage: true     # 每 Stage 结束后释放资源
+  monitor_interval: 1.0         # 内存监控间隔(秒)

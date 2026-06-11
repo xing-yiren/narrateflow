@@ -1,0 +1,30 @@
+# NarrateFlow 依赖 — Mac M4 Pro 路径
+
+# Stage 0: 视频资产探测
+# ffprobe 需要系统安装 ffmpeg: brew install ffmpeg
+
+# Stage 1: 视频理解
+scenedetect[opencv]>=0.6.5
+opencv-python>=4.8.0
+Pillow>=10.0.0
+numpy>=1.24.0
+
+# VLM (P0 云端 / P1 本地)
+# ollama (本地时启用)
+# openai (云端 API 时启用)
+
+# Stage 2: TTS
+# edge-tts (P0 临时方案)
+# VoxCPM2 (P3 正式方案)
+
+# Stage 3: 对齐
+# scikit-learn (语义相似度 TF-IDF)
+# sentence-transformers (P2 语义匹配)
+
+# Stage 4: FFmpeg 合成
+# ffmpeg 通过系统命令调用
+
+# 工具
+pyyaml>=6.0
+jsonschema>=4.17.0
+psutil>=5.9.0

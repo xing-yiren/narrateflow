@@ -1,0 +1,37 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Timeline Plan",
+  "description": "Stage 3 output: aligned timeline for rendering",
+  "type": "object",
+  "required": ["project_id", "segments", "total_duration"],
+  "properties": {
+    "project_id": { "type": "string" },
+    "total_duration": { "type": "number" },
+    "segments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["narration_index", "video_start", "video_end", "retime_strategy"],
+        "properties": {
+          "narration_index": { "type": "integer" },
+          "video_start": { "type": "number" },
+          "video_end": { "type": "number" },
+          "audio_start": { "type": "number" },
+          "audio_end": { "type": "number" },
+          "retime_strategy": {
+            "type": "string",
+            "enum": ["normal", "merge", "speed_change", "broll", "freeze", "manual_review"]
+          },
+          "speed_factor": { "type": "number" },
+          "freeze_point": { "type": "number" },
+          "matched_windows": {
+            "type": "array",
+            "items": { "type": "integer" }
+          },
+          "score": { "type": "number", "minimum": 0 },
+          "needs_review": { "type": "boolean", "default": false }
+        }
+      }
+    }
+  }
+}

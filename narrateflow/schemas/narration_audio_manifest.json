@@ -1,0 +1,27 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Narration Audio Manifest",
+  "description": "Stage 2 output: per-segment audio file info",
+  "type": "object",
+  "required": ["project_id", "tts_model", "segments"],
+  "properties": {
+    "project_id": { "type": "string" },
+    "tts_model": { "type": "string" },
+    "sample_rate": { "type": "integer" },
+    "segments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["index", "audio_file", "duration", "tts_text"],
+        "properties": {
+          "index": { "type": "integer" },
+          "audio_file": { "type": "string" },
+          "duration": { "type": "number", "minimum": 0 },
+          "tts_text": { "type": "string" },
+          "needs_regenerate": { "type": "boolean", "default": false },
+          "issue": { "type": "string" }
+        }
+      }
+    }
+  }
+}

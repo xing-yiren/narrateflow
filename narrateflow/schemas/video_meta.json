@@ -1,0 +1,62 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Video Meta",
+  "description": "Stage 1 output: per-window semantic analysis from VLM",
+  "type": "object",
+  "required": ["project_id", "windows"],
+  "properties": {
+    "project_id": { "type": "string" },
+    "model": { "type": "string" },
+    "generated_at": { "type": "string" },
+    "windows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["window_id", "start_time", "end_time", "frames", "vlm_output"],
+        "properties": {
+          "window_id": { "type": "integer" },
+          "start_time": { "type": "number", "minimum": 0 },
+          "end_time": { "type": "number", "minimum": 0 },
+          "duration": { "type": "number", "minimum": 0 },
+          "frames": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "vlm_output": {
+            "type": "object",
+            "required": ["visual_summary", "physical_tags"],
+            "properties": {
+              "visual_summary": { "type": "string" },
+              "physical_tags": {
+                "type": "array",
+                "items": { "type": "string" }
+              },
+              "mood_tags": {
+                "type": "array",
+                "items": { "type": "string" }
+              },
+              "visible_text": {
+                "type": "array",
+                "items": { "type": "string" }
+              },
+              "action_candidates": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "description": { "type": "string" },
+                    "time_hint": { "type": "number" },
+                    "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+                  }
+                }
+              },
+              "uncertainty": { "type": "string" }
+            }
+          },
+          "needs_review": { "type": "boolean", "default": false },
+          "parse_error": { "type": "string" }
+        }
+      }
+    }
+  }
+}

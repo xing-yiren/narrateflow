@@ -1,0 +1,26 @@
+# macOS
+.DS_Store
+.AppleDouble
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+
+# NarrateFlow
+narrateflow/input/*
+!narrateflow/input/.gitkeep
+narrateflow/output/
+*.log
+
+# Virtual env
+venv/
+env/
+.venv/
