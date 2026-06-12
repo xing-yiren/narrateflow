@@ -37,12 +37,13 @@ stage1:
   
   # VLM 参数
   vlm:
-    # Mac Q8_0 (计划, 9.8GB, 8bit精度, 质量最优):
-    model_name_qwen: qwen3-vl:8b-thinking-q8_0
-    # 备用 Q4_K_M (6.1GB, 4bit混合精度, 显存紧张时启用):
-    # model_name_qwen: qwen3-vl:8b
+    # 主力: Q4_K_M (6.1GB) — 更快(37s)、更可靠(100%)、支持最多3帧
+    # 实测 Q8_0 在 Thinking 模式下失败率 57%，不推荐流水线使用
+    model_name_qwen: qwen3-vl:8b
+    # 备用 Q8_0 (9.8GB): 单帧高质量场景，需 num_predict ≥ 2048
+    # model_name_qwen: qwen3-vl:8b-thinking-q8_0
     num_ctx: 4096
-    num_predict: 1536                           # Thinking 内部推理 ~900tok，需 ≥1536 完整 JSON
+    num_predict: 1536                           # Q4_K_M最佳值 (Thinking ~900tok, 可见~600)
     temperature: 0.3
     keep_alive: 0                               # 推理后立即释放（Mac: 0 或 -1 常驻）
     

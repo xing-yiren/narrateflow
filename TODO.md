@@ -78,6 +78,7 @@
 | 日期 | 完成事项 | 测试结果 | 备注 |
 |------|---------|---------|------|
 | 2026-06-12 | P1 VLM Q8_0 部署 | qwen3-vl:8b-thinking-q8_0 (9.8GB) | Ollama 命名: :8b→Q4_K_M默认, 需显式 :8b-thinking-q8_0 |
+| 2026-06-12 | P1 Q8_0 vs Q4_K_M 对比 | Q4_K_M 100%成功(37s/2-3帧) vs Q8_0 43%成功(59-87s/1帧) | Q8_0 Thinking模式失败率57%, 不适合流水线; Q4_K_M为主力 |
 | 2026-06-11 | P1 VLM Q4_K_M | qwen3-vl:8b 默认=Q4_K_M (6.1GB), 37s/window | num_predict=1536, ~900tok thinking overhead |
 | 2026-06-11 | P0 全部完成 | 47.3s 全流程 | Mock VLM + edge-tts |
 | | | | |
