@@ -17,9 +17,9 @@ numpy>=1.24.0
 # edge-tts (P0 临时方案)
 # VoxCPM2 (P3 正式方案)
 
-# Stage 3: 对齐
-# scikit-learn (语义相似度 TF-IDF)
-# sentence-transformers (P2 语义匹配)
+# Stage 3: 对齐 (P2: 7维评分)
+scikit-learn>=1.0
+# sentence-transformers (P2+ 可选: 语义匹配增强)
 
 # Stage 4: FFmpeg 合成
 # ffmpeg 通过系统命令调用
