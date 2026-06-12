@@ -146,16 +146,36 @@ def run_pipeline(
             if start_stage == 1:
                 raise
     
-    # ── Stage 2: TTS ───────────────────────────────
+    # ── Stage 2: TTS (P3: auto-detect best) ─────────
     if start_stage <= 2 <= end_stage:
         t2 = time.time()
         try:
-            tts_cfg = config.get("stage2", {}).get("edge_tts", {})
-            tts_provider = EdgeTTSProvider(
-                voice=tts_cfg.get("voice", "zh-CN-XiaoxiaoNeural"),
-                rate=tts_cfg.get("rate", "+0%"),
-                pitch=tts_cfg.get("pitch", "+0Hz"),
-            )
+            stage2_cfg = config.get("stage2", {}) if config else {}
+            provider_type = stage2_cfg.get("tts_provider", "edge_tts")
+
+            tts_provider = None
+            if provider_type == "voxcpm2":
+                try:
+                    from narrateflow.providers.tts_voxcpm2 import VoxCPM2Provider
+                    vox_cfg = stage2_cfg.get("voxcpm2", {})
+                    tts_provider = VoxCPM2Provider(
+                        model_path=vox_cfg.get("model_path"),
+                        dtype=vox_cfg.get("dtype"),  # Mac auto fp16
+                    )
+                    if not tts_provider.check_available():
+                        logger.warning("VoxCPM2 不可用，降级为 edge-tts")
+                        tts_provider = None
+                except Exception as e:
+                    logger.warning(f"VoxCPM2 初始化失败: {e}，降级为 edge-tts")
+
+            if tts_provider is None:
+                edge_cfg = stage2_cfg.get("edge_tts", {})
+                tts_provider = EdgeTTSProvider(
+                    voice=edge_cfg.get("voice", "zh-CN-XiaoxiaoNeural"),
+                    rate=edge_cfg.get("rate", "+0%"),
+                    pitch=edge_cfg.get("pitch", "+0Hz"),
+                )
+
             run_stage2(manifest_path, output_dir, config, tts_provider=tts_provider)
             metrics["stages"]["stage2"] = {"status": "ok", "elapsed": round(time.time() - t2, 1)}
             logger.info("✓ Stage 2 完成")

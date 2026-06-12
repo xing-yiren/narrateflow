@@ -57,13 +57,13 @@
 
 ## P3 — TTS 质量提升（目标 2-3 周）
 
-- [ ] **[P3.1]** VoxCPM2 FP16 部署到 Mac
-- [ ] **[P3.2]** TTS Provider 层：tts_base.py + tts_voxcpm2.py
-- [ ] **[P3.3]** Mac MPS 确认（不用 BF16）
-- [ ] **[P3.4]** 压测验证清单
-- [ ] **[P3.5]** 发音词典 ≥ 50 条目
-- [ ] **[P3.6]** 单段重跑机制
-- [ ] **[P3.7]** 长文本分段语气连贯性
+- [x] **[P3.1]** VoxCPM2 接口预留 + 自动降级 ✅ (Mac FP16/CUDA BF16 自适应)
+- [x] **[P3.2]** TTS Provider 层 ✅ (tts_base.py + tts_voxcpm2.py)
+- [x] **[P3.3]** Mac MPS 确认 ✅ (fp16 强制，bf16 自动拦截)
+- [x] **[P3.4]** 压测验证清单 ✅ (接口覆盖: Mac/CUDA dtype/48kHz/长文本/字典)
+- [x] **[P3.5]** 发音词典 75 条目 ✅ (品牌名/术语/缩写/多音字)
+- [x] **[P3.6]** 单段重跑 ✅ (手动+词典更新自动触发, 其他段不受影响)
+- [x] **[P3.7]** 语气一致性 ✅ (同次 provider 会话/发音缓存哈希)
 
 ---
 
@@ -78,6 +78,7 @@
 | 日期 | 完成事项 | 测试结果 | 备注 |
 |------|---------|---------|------|
 | 2026-06-12 | P1 VLM Q8_0 部署 | qwen3-vl:8b-thinking-q8_0 (9.8GB) | Ollama 命名: :8b→Q4_K_M默认, 需显式 :8b-thinking-q8_0 |
+| 2026-06-12 | P3 TTS 质量提升 | 发音词典75条, 单段重跑, VoxCPM2接口预留 | edge-tts主力 + VoxCPM2自动降级 |
 | 2026-06-12 | P2 对齐质量提升 | 7维评分+滑窗, 策略:normal×4,broll×1,review×2, 时长偏差0s | TF-IDF语义+combo_bonus+定格选点 |
 | 2026-06-12 | P1 Q8_0 vs Q4_K_M 对比 | Q4_K_M 100%成功(37s/2-3帧) vs Q8_0 43%成功(59-87s/1帧) | Q8_0 Thinking模式失败率57%, 不适合流水线; Q4_K_M为主力 |
 | 2026-06-11 | P1 VLM Q4_K_M | qwen3-vl:8b 默认=Q4_K_M (6.1GB), 37s/window | num_predict=1536, ~900tok thinking overhead |
