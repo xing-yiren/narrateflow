@@ -33,7 +33,7 @@
 
 ## P1 — 本地 VLM 部署（目标 2-3 周）
 
-- [x] **[P1.1]** Mac 部署 ✅ (qwen3-vl:8b Q4_K_M, 6.1GB) Qwen3-VL-8B Q8_0 到 Ollama
+- [x] **[P1.1]** Mac 部署 ✅ (Q8_0 9.8GB + Q4_K_M 6.1GB 双版本) Qwen3-VL-8B Q8_0 到 Ollama
 - [x] **[P1.2]** VLM Provider 层 ✅ (vlm_ollama.py)：vlm_base.py + vlm_ollama.py
 - [x] **[P1.3]** 动态帧差抽帧优化 ✅
 - [x] **[P1.4]** JSON 解析多级容错 ✅ (去thinking + 截断修复)
@@ -77,6 +77,7 @@
 
 | 日期 | 完成事项 | 测试结果 | 备注 |
 |------|---------|---------|------|
-| 2026-06-11 | P1 VLM 部署完成 | Qwen3-VL 推理 37s/窗口, 19 OCR 项 | num_predict=1536, Q4_K_M 6.1GB |
+| 2026-06-12 | P1 VLM Q8_0 部署 | qwen3-vl:8b-thinking-q8_0 (9.8GB) | Ollama 命名: :8b→Q4_K_M默认, 需显式 :8b-thinking-q8_0 |
+| 2026-06-11 | P1 VLM Q4_K_M | qwen3-vl:8b 默认=Q4_K_M (6.1GB), 37s/window | num_predict=1536, ~900tok thinking overhead |
 | 2026-06-11 | P0 全部完成 | 47.3s 全流程 | Mock VLM + edge-tts |
 | | | | |

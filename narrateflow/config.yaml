@@ -37,7 +37,10 @@ stage1:
   
   # VLM 参数
   vlm:
-    model_name_qwen: qwen3-vl:8b               # Ollama 模型名（当前为 Q4_K_M 量化）
+    # Mac Q8_0 (计划, 9.8GB, 8bit精度, 质量最优):
+    model_name_qwen: qwen3-vl:8b-thinking-q8_0
+    # 备用 Q4_K_M (6.1GB, 4bit混合精度, 显存紧张时启用):
+    # model_name_qwen: qwen3-vl:8b
     num_ctx: 4096
     num_predict: 1536                           # Thinking 内部推理 ~900tok，需 ≥1536 完整 JSON
     temperature: 0.3
