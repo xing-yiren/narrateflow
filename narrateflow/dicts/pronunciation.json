@@ -1,6 +1,5 @@
 {
   "_comment": "NarrateFlow 发音词典 — 对 TTS 输出前的文本做替换，修正机器发音",
-
   "AI": "人工智能",
   "API": "接口",
   "SDK": "开发工具包",
@@ -24,7 +23,6 @@
   "KPI": "关键绩效指标",
   "MVP": "最小可行产品",
   "PRD": "产品需求文档",
-
   "GitHub": "开源代码平台",
   "Git": "版本控制工具",
   "Docker": "容器工具",
@@ -40,7 +38,6 @@
   "Java": "编程语言",
   "JavaScript": "编程语言",
   "TypeScript": "编程语言",
-
   "OpenAI": "开放人工智能公司",
   "ChatGPT": "聊天机器人",
   "Hugging Face": "人工智能社区",
@@ -56,9 +53,9 @@
   "dataset": "数据集",
   "batch": "批次",
   "epoch": "训练轮次",
-
   "NarrateFlow": "视频配音系统",
   "JiuwenClaw": "九问智能平台",
+  "Team Skills": "团队技能",
   "teamskill-creator": "团队技能自动生成专家",
   "team-skill": "团队技能",
   "Team Skill Hub": "团队技能中心",
@@ -71,7 +68,6 @@
   "Ollama": "本地模型服务",
   "VoxCPM": "语音合成模型",
   "Qwen": "通义千问",
-
   "V2": "第二版",
   "V2.0": "二点零版本",
   "23个": "二十三个",
