@@ -1,7 +1,10 @@
 """
 VoxCPM2 TTS Provider — Mac M4 Pro / RTX 3060 双平台
-统一接口，自动检测平台选择 dtype。
+Mac: 自动 FP16 + MPS (禁止 BF16)
+3060: 自动 BF16 + CUDA
+部署: 模型从 hf-mirror 下载, 源码从 dev_2.0 分支
 """
+import os
 import logging
 import subprocess
 import time
@@ -81,13 +84,16 @@ class VoxCPM2Provider(TTSProvider):
         """尝试加载 VoxCPM2 模型"""
         try:
             from voxcpm import VoxCPM
+            # 不传 dtype/device 参数，让模型从 config.json 自动读取
             self._model = VoxCPM.from_pretrained(
-                self.model_path or "OpenBMB/VoxCPM2-0.5B",
-                dtype=self._dtype,
-                device=self._device,
+                self.model_path or os.path.abspath("./models/voxcpm2"),
+                load_denoiser=False,  # denoiser 需要 modelscope 网络，可选关闭
+                local_files_only=True,
             )
             self._available = True
-            logger.info(f"VoxCPM2 加载成功 (dtype={self._dtype})")
+            self._sample_rate = self._model.tts_model.sample_rate if hasattr(self._model, 'tts_model') else 48000
+            logger.info(f"VoxCPM2 加载成功 (device={self._model.tts_model.device if hasattr(self._model, 'tts_model') else 'auto'}, "
+                       f"sr={self._sample_rate}Hz)")
         except ImportError:
             logger.warning(
                 "VoxCPM2 未安装。安装命令:\n"
@@ -119,31 +125,18 @@ class VoxCPM2Provider(TTSProvider):
 
         t_start = time.time()
 
-        # VoxCPM2 推理
-        # 根据 repo 的实际 API 调整（以下是预期接口）
-        voice = kwargs.get("voice", "default")
-        speed = kwargs.get("speed", 1.0)
-
         try:
-            # VoxCPM2 API (预期):
-            # audio = model.generate(text, voice=voice, speed=speed)
-            # sf.write(output_path, audio, self.sample_rate)
-            audio = self._model.generate(
-                text=text,
-                voice=voice,
-                speed=speed,
-            )
-
             import soundfile as sf
-            sf.write(str(output_path), audio, self.sample_rate)
-            duration = len(audio) / self.sample_rate
-
+            audio = self._model.generate(text=text)
+            sf.write(str(output_path), audio, self._sample_rate)
+            duration = len(audio) / self._sample_rate
         except Exception as e:
             raise RuntimeError(f"VoxCPM2 合成失败: {e}")
 
         t_elapsed = time.time() - t_start
+        ratio = t_elapsed / duration if duration > 0 else 999
         logger.debug(f"VoxCPM2: {duration:.1f}s audio, {t_elapsed:.1f}s "
-                     f"(ratio={t_elapsed/duration:.1f}x)")
+                     f"(ratio={ratio:.1f}x)")
 
         return round(duration, 3)
 
