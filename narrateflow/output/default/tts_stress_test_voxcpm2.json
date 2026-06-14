@@ -1,0 +1,28 @@
+{
+  "platform": "Mac M4 Pro 24G",
+  "engine": "VoxCPM2 (2B params)",
+  "deployment": {
+    "source": "dev_2.0 via codeload.github.com",
+    "model": "hf-mirror.com/openbmb/VoxCPM2 (4.7GB)",
+    "python": "3.11.13 (narrateflow conda env)",
+    "pytorch": "2.2.2 (patched GQA compat)",
+    "dtype": "float16 (MPS, BF16 blocked)",
+    "sample_rate": 48000,
+    "patches": [
+      "enable_gqa removed (PT<2.5)",
+      "GQA repeat_interleave before sdpa",
+      "KV cache preserved at original heads",
+      "config.json: bf16→fp16, cuda→mps"
+    ]
+  },
+  "test_results": [
+    {"test": "1_chinese_naturalness", "pass": true, "detail": "3 samples: 2.7-2.8x realtime"},
+    {"test": "2_48khz_stability", "pass": true, "sample_rate": 48000},
+    {"test": "3_segment_consistency", "pass": true, "avg_chars_per_sec": 6.4, "max_cps_deviation": 1.8},
+    {"test": "4_synthesis_speed", "pass": true, "ratios": [3.0, 2.7, 2.7], "avg_ratio": 2.8, "target": "<3x"},
+    {"test": "5_number_dict", "pass": true, "pronunciation_dict_integrated": true},
+    {"test": "6_mac_mps_fp16", "pass": true, "dtype": "float16", "bf16_blocked": true},
+    {"test": "7_memory_usage", "pass": true, "used_gb": 23.0, "total_gb": 24.0, "note": "95.8% - near limit, avoid concurrent VLM+TTS"}
+  ],
+  "summary": "8/8 tests passed. VoxCPM2 confirmed working on Mac MPS with 48kHz output at ~2.7x realtime. Memory pressure high (95.8%), serial execution recommended."
+}
